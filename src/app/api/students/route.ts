@@ -1,0 +1,549 @@
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { verifyToken, getAuthToken } from '@/lib/auth';
+import { normalizePhoneNumber } from '@/lib/phone';
+
+export async function POST(req: Request) {
+  try {
+    const token = await getAuthToken(req, 'auth_token');
+
+    if (!token) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const payload = verifyToken(token) as { employeeId: string } | null;
+
+    if (!payload || !payload.employeeId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const data = await req.json();
+
+    const cleanPhone = normalizePhoneNumber(data.phone);
+    const cleanWhatsapp = data.whatsapp ? normalizePhoneNumber(data.whatsapp) : null;
+
+    // Check for existing phone number if provided
+    if (cleanPhone) {
+      const existingStudent = await prisma.student.findFirst({
+        where: {
+          OR: [
+            { phone: cleanPhone },
+            { phone: `+91 ${cleanPhone}` },
+            { phone: `+91${cleanPhone}` },
+            { phone: { contains: cleanPhone } }
+          ]
+        }
+      });
+
+      if (existingStudent) {
+        return NextResponse.json({ error: 'Student with this phone number already exists.' }, { status: 400 });
+      }
+    }
+
+    const userCreator = await prisma.user.findUnique({
+      where: { employeeId: payload.employeeId },
+      select: { collegeId: true }
+    });
+
+    const newStudent = await prisma.student.create({
+      data: {
+        employeeId: payload.employeeId,
+        collegeId: userCreator?.collegeId || data.collegeId || null,
+        studentName: data.studentName || "",
+        fatherName: data.fatherName || null,
+        occupation: data.occupation || null,
+        address: data.address || null,
+        phone: cleanPhone || "",
+        whatsapp: cleanWhatsapp || null,
+        gender: data.gender || null,
+        group: data.group || "",
+        visitNumber: data.visitNumber || null,
+        schoolName: data.schoolName || null,
+        schoolArea: data.schoolArea || null,
+        marks: data.marks || null,
+        remarks: data.remarks || null,
+        district: data.district || null,
+        mandal: data.mandal || null,
+        village: data.village || null,
+        studyInterestedAt: data.studyInterestedAt || null,
+        educationStage: data.educationStage || null,
+        ableToBearFee: data.ableToBearFee || null,
+        doorstepCompleted: data.doorstepCompleted ? true : false,
+      },
+    });
+
+    return NextResponse.json({ message: 'Student added successfully', student: newStudent }, { status: 201 });
+  } catch (error) {
+    console.error('Add student error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function GET(req: Request) {
+  try {
+    const token = await getAuthToken(req, 'auth_token');
+
+    if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const payload = verifyToken(token) as { employeeId: string; role: string } | null;
+
+    if (!payload || !payload.employeeId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(req.url);
+    const date = searchParams.get('date');
+    const search = searchParams.get('search');
+    const preset = searchParams.get('preset');
+    const interest = searchParams.get('interest');
+    const fee = searchParams.get('fee');
+    const location = searchParams.get('location');
+    const mandal = searchParams.get('mandal');
+    const village = searchParams.get('village');
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '50');
+
+    let whereClause: any = { AND: [] };
+
+    const userRole = (payload.role || '').toUpperCase();
+
+    if (userRole === 'ADMIN') {
+      // Admin can view all or filter by specific employee
+      const employeeIdFilter = searchParams.get('employeeId') || searchParams.get('staffId');
+      if (employeeIdFilter) whereClause.AND.push({ employeeId: employeeIdFilter });
+    } else if (userRole === 'TELECALLER') {
+      const user = await prisma.user.findUnique({
+        where: { employeeId: payload.employeeId },
+        select: { assignedEmployees: true }
+      });
+      if (user && user.assignedEmployees && user.assignedEmployees.length > 0) {
+        whereClause.AND.push({ employeeId: { in: user.assignedEmployees } });
+      } else {
+        // If no assigned employees, telecaller cannot view any leads
+        whereClause.AND.push({ id: 'none' });
+      }
+    } else if (userRole === 'COLLEGE') {
+      const user = await prisma.user.findUnique({
+        where: { employeeId: payload.employeeId },
+        select: { collegeId: true, allowedGroups: true, allowedLocations: true }
+      });
+      if (user && user.collegeId) {
+        const collegeStaff = await prisma.user.findMany({
+          where: { collegeId: user.collegeId },
+          select: { employeeId: true }
+        });
+        const staffIds = collegeStaff.map(s => s.employeeId);
+        whereClause.AND.push({
+          OR: [
+            { collegeId: user.collegeId },
+            { employeeId: { in: staffIds } }
+          ]
+        });
+      } else if (user) {
+        if (user.allowedGroups.length > 0) {
+          whereClause.AND.push({ group: { in: user.allowedGroups } });
+        }
+        if (user.allowedLocations.length > 0) {
+          whereClause.AND.push({ studyInterestedAt: { in: user.allowedLocations } });
+        }
+        // If they have no permissions, they see nothing
+        if (user.allowedGroups.length === 0 && user.allowedLocations.length === 0) {
+          whereClause.AND.push({ id: 'none' }); // impossible condition
+        }
+      }
+
+      // Hide students admitted to other colleges (applicable only to COLLEGE role users)
+      const targetCollegeId = user?.collegeId || payload.employeeId;
+      whereClause.AND.push({
+        OR: [
+          { joinedCollegeId: null },
+          { joinedCollegeId: targetCollegeId },
+          { collegeBranchId: targetCollegeId }
+        ]
+      });
+    } else {
+      // For EMPLOYEE, AGM, TEAM_LEADER, PRO, or any employee portal user: STRICT DATA ISOLATION
+      // A person's data must NEVER be visible to another person!
+      whereClause.AND.push({ employeeId: payload.employeeId });
+    }
+
+      // Hide students who joined external competitor colleges (except when generating day/visit reports or querying dates)
+      const isReportOrDateQuery = searchParams.has('reportType') || 
+                                  searchParams.has('startDate') || 
+                                  searchParams.has('endDate') || 
+                                  searchParams.has('date') || 
+                                  searchParams.get('includeJoinedOther') === 'true';
+      if (!isReportOrDateQuery) {
+        whereClause.AND.push({
+          NOT: {
+            leadStatus: 'Joined Other College'
+          }
+        });
+      }
+    
+    const callStatus = searchParams.get('callStatus');
+    if (callStatus === 'not_called') {
+      whereClause.AND.push({
+        OR: [
+          { remarks: null },
+          { remarks: '' }
+        ]
+      });
+    }
+
+    const addedDate = searchParams.get('addedDate');
+    if (addedDate) {
+      const startOfDay = new Date(addedDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(addedDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      whereClause.AND.push({
+        createdAt: { gte: startOfDay, lte: endOfDay }
+      });
+    }
+
+    const admissionStatus = searchParams.get('admissionStatus');
+    if (admissionStatus === 'admitted') {
+      whereClause.AND.push({ leadStatus: 'Admitted' });
+    } else if (admissionStatus === 'pending') {
+      whereClause.AND.push({
+        OR: [
+          { leadStatus: { not: 'Admitted' } },
+          { leadStatus: null }
+        ]
+      });
+    }
+
+    const reportType = searchParams.get('reportType') || 'all'; // 'all' | 'new_students' | 'visits'
+    const startDate = searchParams.get('startDate');
+    const endDate = searchParams.get('endDate');
+
+    if (startDate && endDate) {
+      // Safe boundary covering both Indian Standard Time (UTC+05:30) and UTC representations
+      const queryStart = new Date(new Date(`${startDate}T00:00:00.000Z`).getTime() - 12 * 60 * 60 * 1000);
+      const queryEnd = new Date(new Date(`${endDate}T23:59:59.999Z`).getTime() + 12 * 60 * 60 * 1000);
+
+      if (reportType === 'new_students') {
+        whereClause.AND.push({
+          createdAt: { gte: queryStart, lte: queryEnd }
+        });
+      } else if (reportType === 'visits') {
+        whereClause.AND.push({
+          visits: { some: { visitDate: { gte: queryStart, lte: queryEnd } } }
+        });
+      } else {
+        whereClause.AND.push({
+          OR: [
+            { createdAt: { gte: queryStart, lte: queryEnd } },
+            { visits: { some: { visitDate: { gte: queryStart, lte: queryEnd } } } }
+          ]
+        });
+      }
+    } else if (date) {
+      const queryStart = new Date(new Date(`${date}T00:00:00.000Z`).getTime() - 12 * 60 * 60 * 1000);
+      const queryEnd = new Date(new Date(`${date}T23:59:59.999Z`).getTime() + 12 * 60 * 60 * 1000);
+
+      if (reportType === 'new_students') {
+        whereClause.AND.push({
+          createdAt: { gte: queryStart, lte: queryEnd }
+        });
+      } else if (reportType === 'visits') {
+        whereClause.AND.push({
+          visits: { some: { visitDate: { gte: queryStart, lte: queryEnd } } }
+        });
+      } else {
+        whereClause.AND.push({
+          OR: [
+            { createdAt: { gte: queryStart, lte: queryEnd } },
+            { visits: { some: { visitDate: { gte: queryStart, lte: queryEnd } } } }
+          ]
+        });
+      }
+    } else if (reportType === 'visits') {
+      // If all time but visits selected, only include students who had visits
+      whereClause.AND.push({
+        visits: { some: {} }
+      });
+    }
+
+    if (search) {
+      whereClause.AND.push({
+        OR: [
+          { studentName: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search } }
+        ]
+      });
+    }
+
+    console.log("=== API /api/students HIT ===");
+    console.log("URL:", req.url);
+    console.log("Preset:", preset);
+    
+    if (preset === 'prime') {
+      console.log("Applying prime preset filters...");
+      const targetConfigs = await prisma.configValue.findMany({
+        where: {
+          OR: [
+            { type: 'STUDY_INTEREST', value: { contains: 'vizag', mode: 'insensitive' } },
+            { type: 'STUDY_INTEREST', value: { contains: 'visakha', mode: 'insensitive' } },
+            { type: 'FEE_BEARABLE', value: { contains: 'yes', mode: 'insensitive' } },
+            { type: 'FEE_BEARABLE', value: { contains: 'bearable', mode: 'insensitive' } },
+            { type: 'GROUP', value: { contains: 'MPC', mode: 'insensitive' } },
+            { type: 'GROUP', value: { contains: 'BIPC', mode: 'insensitive' } }
+          ]
+        }
+      });
+      
+      const interestIds = targetConfigs.filter(c => c.type === 'STUDY_INTEREST').map(c => c.id);
+      const feeIds = targetConfigs.filter(c => c.type === 'FEE_BEARABLE').map(c => c.id);
+      const groupIds = targetConfigs.filter(c => c.type === 'GROUP').map(c => c.id);
+
+      whereClause.AND.push({
+        OR: [
+          { studyInterestedAt: { in: interestIds } },
+          { studyInterestedAt: { contains: 'vizag', mode: 'insensitive' } },
+          { studyInterestedAt: { contains: 'visakha', mode: 'insensitive' } }
+        ]
+      });
+
+      whereClause.AND.push({
+        OR: [
+          { ableToBearFee: { in: feeIds } },
+          { ableToBearFee: { contains: 'yes', mode: 'insensitive' } },
+          { ableToBearFee: { contains: 'bearable', mode: 'insensitive' } }
+        ]
+      });
+
+      whereClause.AND.push({
+        OR: [
+          { group: { in: groupIds } },
+          { group: { contains: 'mpc', mode: 'insensitive' } },
+          { group: { contains: 'bipc', mode: 'insensitive' } }
+        ]
+      });
+    }
+
+    if (interest) whereClause.AND.push({ studyInterestedAt: interest });
+    if (fee) whereClause.AND.push({ ableToBearFee: fee });
+
+    if (userRole === 'ADMIN') {
+      const employeeIdFilter = searchParams.get('employeeId') || searchParams.get('staffId');
+      if (employeeIdFilter && !whereClause.AND.some((c: any) => c.employeeId)) {
+        whereClause.AND.push({ employeeId: employeeIdFilter });
+      }
+    }
+
+    const agmIdFilter = searchParams.get('agmId');
+    if (agmIdFilter) {
+      const agmStaff = await prisma.user.findMany({
+        where: {
+          assignedAgms: { has: agmIdFilter }
+        },
+        select: { employeeId: true }
+      });
+      const staffUnderAgm = [...agmStaff.map(s => s.employeeId), agmIdFilter];
+      whereClause.AND.push({
+        employeeId: { in: staffUnderAgm }
+      });
+    }
+
+    const doorstepFilter = searchParams.get('doorstep');
+    if (doorstepFilter === 'completed') {
+      whereClause.AND.push({ doorstepCompleted: true });
+    } else if (doorstepFilter === 'pending') {
+      whereClause.AND.push({ doorstepCompleted: false });
+    }
+
+    const groupFilter = searchParams.get('group');
+    if (groupFilter) whereClause.AND.push({ group: groupFilter });
+
+    if (location) {
+      whereClause.AND.push({
+        OR: [
+          { district: location },
+          { mandal: location },
+          { village: location }
+        ]
+      });
+    }
+
+    if (mandal) {
+      whereClause.AND.push({ mandal });
+    }
+    
+    if (village) {
+      whereClause.AND.push({ village });
+    }
+
+    const schoolName = searchParams.get('schoolName');
+    if (schoolName) {
+      whereClause.AND.push({ schoolName });
+    }
+
+    const profileStatus = searchParams.get('profileStatus');
+    if (profileStatus === 'incomplete') {
+      whereClause.AND.push({
+        OR: [
+          { fatherName: null }, { fatherName: '' },
+          { district: null }, { district: '' },
+          { mandal: null }, { mandal: '' },
+          { village: null }, { village: '' },
+          { schoolName: null }, { schoolName: '' },
+          { gender: null }, { gender: '' },
+          { occupation: null }, { occupation: '' }
+        ]
+      });
+    }
+
+    const followup = searchParams.get('followup');
+    if (followup) {
+      whereClause.AND.push({
+        NOT: { leadStatus: 'Admitted' }
+      });
+      const endOfToday = new Date();
+      endOfToday.setHours(23, 59, 59, 999);
+
+      if (payload && payload.role === 'COLLEGE') {
+        if (followup === 'today') {
+          whereClause.AND.push({
+            visits: {
+              some: {
+                addedById: payload.employeeId,
+                nextFollowUpDate: { lte: endOfToday, not: null },
+                OR: [
+                  { nextFollowUpType: 'Date' },
+                  { nextFollowUpType: null }
+                ]
+              }
+            }
+          });
+        } else if (followup === 'upcoming') {
+          whereClause.AND.push({
+            visits: {
+              some: {
+                addedById: payload.employeeId,
+                nextFollowUpDate: { gt: endOfToday, not: null },
+                OR: [
+                  { nextFollowUpType: 'Date' },
+                  { nextFollowUpType: null }
+                ]
+              }
+            }
+          });
+        } else if (followup === 'action') {
+          whereClause.AND.push({
+            visits: {
+              some: {
+                addedById: payload.employeeId,
+                nextFollowUpType: { in: ['After Exams', 'After Results'] }
+              }
+            }
+          });
+        }
+      } else {
+        if (followup === 'today') {
+          whereClause.AND.push({
+            nextFollowUpDate: { lte: endOfToday, not: null },
+            OR: [
+              { nextFollowUpType: 'Date' },
+              { nextFollowUpType: null }
+            ]
+          });
+        } else if (followup === 'upcoming') {
+          whereClause.AND.push({
+            nextFollowUpDate: { gt: endOfToday, not: null },
+            OR: [
+              { nextFollowUpType: 'Date' },
+              { nextFollowUpType: null }
+            ]
+          });
+        } else if (followup === 'action') {
+          whereClause.AND.push({
+            nextFollowUpType: { in: ['After Exams', 'After Results'] }
+          });
+        }
+      }
+    }
+
+    // If no AND conditions were added, remove the empty array
+    if (whereClause.AND.length === 0) {
+      delete whereClause.AND;
+    }
+
+    const minimal = searchParams.get('minimal') === 'true';
+
+    const total = await prisma.student.count({ where: whereClause });
+
+    const isReportExport = limit > 100 || searchParams.has('reportType');
+    let visitInclude: any = {
+      orderBy: { visitDate: 'asc' as const },
+      ...(isReportExport ? {} : { take: 5, orderBy: { visitDate: 'desc' as const } })
+    };
+    
+    if (payload.role === 'COLLEGE') {
+      visitInclude.where = { ...(visitInclude.where || {}), addedById: payload.employeeId };
+    }
+
+
+
+    const queryOptions: any = {
+      where: whereClause,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    };
+
+    if (minimal) {
+      queryOptions.select = {
+        id: true,
+        employeeId: true,
+        collegeId: true,
+        studentName: true,
+        gender: true,
+        phone: true,
+        whatsapp: true,
+        fatherName: true,
+        occupation: true,
+        group: true,
+        schoolName: true,
+        schoolArea: true,
+        marks: true,
+        district: true,
+        mandal: true,
+        village: true,
+        address: true,
+        studyInterestedAt: true,
+        educationStage: true,
+        ableToBearFee: true,
+        visitNumber: true,
+        remarks: true,
+        leadStatus: true,
+        doorstepCompleted: true,
+        telecallerUpdateAt: true,
+        telecallerUpdateDetails: true,
+        nextFollowUpDate: true,
+        nextFollowUpType: true,
+        joinedCollegeId: true,
+        applicationNumber: true,
+        admissionDate: true,
+        studentPhoto: true,
+        applicationPhoto: true,
+        createdAt: true,
+        updatedAt: true,
+        visits: visitInclude,
+      };
+    } else {
+      queryOptions.include = { 
+        employee: true,
+        visits: visitInclude,
+        joinedCollege: { select: { name: true } }
+      };
+    }
+
+    const students = await prisma.student.findMany(queryOptions);
+
+    return NextResponse.json({ students, total, page, limit }, { status: 200 });
+  } catch (error) {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

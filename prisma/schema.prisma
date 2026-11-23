@@ -1,0 +1,434 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id               String    @id @default(cuid())
+  employeeId       String    @unique
+  name             String
+  password         String
+  role             String    @default("EMPLOYEE") // EMPLOYEE, TEAM_LEADER, ADMIN, TELECALLER, COLLEGE
+  isActive         Boolean   @default(true)
+  
+  // New fields for COLLEGE role
+  allowedGroups    String[]  @default([])
+  allowedLocations String[]  @default([])
+  
+  // Field for TELECALLER role to restrict visibility to specific employees
+  assignedEmployees String[] @default([])
+  assignedAgms      String[] @default([])
+  
+  // Location & School assignments for Field Employees
+  assignedMandals   String[] @default([])
+  assignedSchools   String[] @default([])
+  
+  lastViewedTelecallerUpdatesAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  students         Student[]
+  visitsCreated    Visit[]   @relation("UserVisits")
+  admittedStudents Student[] @relation("CollegeAdmissions")
+  keyPersons       KeyPerson[] @relation("EmployeeKeyPersons")
+  relativeContacts RelativeContact[] @relation("EmployeeRelatives")
+  tasks            EmployeeTask[] @relation("EmployeeTasks")
+  institutionVisits InstitutionVisit[] @relation("EmployeeInstitutionVisits")
+  
+  collegeId        String?
+  college          College?  @relation(fields: [collegeId], references: [id], onDelete: SetNull)
+}
+
+model ConfigValue {
+  id        String        @id @default(cuid())
+  type      String        // 'DISTRICT', 'MANDAL', 'VILLAGE', 'GROUP', 'STATUS', 'SCHOOL', 'OCCUPATION', 'STUDY_INTEREST', 'FEE_BEARABLE'
+  value     String
+  parentId  String?       // Used for hierarchy (e.g. Village -> Mandal -> District)
+  parent    ConfigValue?  @relation("ConfigHierarchy", fields: [parentId], references: [id])
+  children  ConfigValue[] @relation("ConfigHierarchy")
+  strength  Int?          @default(0) // Used for school strength
+  grade     String?       // Used for school grade (e.g., A+, A, B)
+  headmasterName  String? // Used for school headmaster name
+  headmasterPhone String? // Used for school headmaster phone
+  keyPersonName   String? // Used for school key person name
+  keyPersonPhone  String? // Used for school key person phone
+  remarks         Json?   // To store telecaller remarks
+  telecallerUpdateAt DateTime?
+  telecallerUpdateDetails String?
+  createdAt DateTime      @default(now())
+
+  collegeId       String?
+  college         College?      @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+
+  @@index([type])
+  @@index([parentId])
+  @@index([collegeId])
+}
+
+model Student {
+  id                String   @id @default(cuid())
+  employeeId        String
+  employee          User     @relation(fields: [employeeId], references: [employeeId])
+  studentName       String
+  fatherName        String?
+  occupation        String?
+  address           String?
+  phone             String
+  whatsapp          String?
+  gender            String?
+  group             String
+  visitNumber       String?
+  
+  // New Hierarchical Location Fields (Can store the ConfigValue names directly for easy querying/PDF)
+  district          String?
+  mandal            String?
+  village           String?
+  
+  schoolName        String?
+  schoolArea        String?
+  marks             String?
+  remarks           String?
+  leadStatus        String?  @default("New")
+  
+  // New Fields
+  studyInterestedAt String?
+  educationStage    String?
+  ableToBearFee     String?
+  nextFollowUpDate  DateTime?
+  nextFollowUpType  String?
+  doorstepCompleted Boolean  @default(false)
+  
+  telecallerUpdateAt DateTime?
+  telecallerUpdateDetails String?
+
+  // Admission Tracking
+  joinedCollegeId   String?
+  joinedCollege     User?          @relation("CollegeAdmissions", fields: [joinedCollegeId], references: [employeeId])
+  collegeBranchId   String?
+  collegeBranch     CollegeBranch? @relation(fields: [collegeBranchId], references: [id], onDelete: SetNull)
+  applicationNumber String?
+  admissionDate     DateTime?
+  studentPhoto      String?
+  applicationPhoto  String?
+  
+  visits            Visit[]
+  callRecords       SpxCallRecord[]
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Student Login & Assessment Fields
+  password           String?
+  registrationStatus String   @default("APPROVED") // PENDING, APPROVED, REJECTED
+  registeredBy       String   @default("EMPLOYEE") // EMPLOYEE, SELF
+  
+  testResponses      StudentTestResponse[]
+  assessmentReport   AssessmentReport?
+
+  collegeId          String?
+  college            College? @relation(fields: [collegeId], references: [id], onDelete: SetNull)
+
+  @@index([schoolName])
+  @@index([mandal])
+  @@index([collegeId])
+  @@index([employeeId])
+  @@index([village])
+  @@index([district])
+  @@index([leadStatus])
+  @@index([studyInterestedAt])
+  @@index([ableToBearFee])
+  @@index([createdAt])
+}
+
+model Visit {
+  id               String    @id @default(cuid())
+  studentId        String
+  student          Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  addedById        String?
+  addedBy          User?     @relation("UserVisits", fields: [addedById], references: [employeeId])
+  
+  visitDate        DateTime  @default(now())
+  remarks          String
+  nextFollowUpDate DateTime?
+  nextFollowUpType String?
+  createdAt        DateTime  @default(now())
+}
+
+// ==========================================
+// STUDENT ASSESSMENT & CAREER GUIDANCE MODELS
+// ==========================================
+
+model Question {
+  id            String   @id @default(cuid())
+  module        String   @default("1") // "1" for Group Clarity, "2" for Study Discipline, "3" for Screen Time, "4" for Family, "5" for Career Readiness
+  order         Int      @default(1)
+  text          String
+  options       Option[]
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  
+  studentResponses StudentTestResponse[]
+}
+
+model Option {
+  id          String   @id @default(cuid())
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text        String
+  score       Int      @default(0) // Used to calculate aptitude/behavior score
+  traitPoints String?  // e.g., 'SCIENCE:5, MATH:2' or JSON string to weight different traits
+}
+
+model StudentTestResponse {
+  id          String   @id @default(cuid())
+  studentId   String
+  student     Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  optionId    String
+  createdAt   DateTime @default(now())
+  
+  @@unique([studentId, questionId])
+}
+
+model AssessmentReport {
+  id               String   @id @default(cuid())
+  studentId        String   @unique
+  student          Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  recommendedGroup String?  // e.g., "MPC", "BiPC"
+  recommendedJobs  String?  // e.g., "Software Engineer, Doctor"
+  dailyActivities  String?  @db.Text
+  identifiedFlaws  String?  @db.Text
+  advice           String?  @db.Text
+  
+  // Modular Scores
+  disciplineScore      Int?
+  screenTimeScore      Int?
+  familyAttitudeScore  Int?
+  careerClarityScore   Int?
+  moduleInsights       Json?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ==========================================
+// STUDY MATERIALS & RESOURCES
+// ==========================================
+
+model Book {
+  id           String   @id @default(cuid())
+  title        String
+  description  String?
+  pdfUrl       String   // Google Drive PDF link
+  thumbnailUrl String   // Thumbnail image link
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Video {
+  id           String   @id @default(cuid())
+  title        String
+  description  String?
+  youtubeUrl   String   // YouTube link
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model KeyPerson {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String
+  designation String?
+  schoolName  String?
+  schoolId    String?
+  
+  district    String?
+  mandal      String?
+  village     String?
+  address     String?
+  
+  employeeId  String
+  employee    User     @relation("EmployeeKeyPersons", fields: [employeeId], references: [employeeId])
+  remarks     Json?    // To store telecaller remarks
+  telecallerUpdateAt DateTime?
+  telecallerUpdateDetails String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([mandal])
+  @@index([schoolName])
+}
+
+model RelativeContact {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String
+  occupation  String?
+  village     String   // Village ConfigValue id or name
+  mandal      String?  // Optional Mandal ConfigValue id or name
+  district    String?  // Optional District ConfigValue id or name
+  relation    String?  // Optional relation e.g. Uncle, Brother
+  
+  employeeId  String
+  employee    User     @relation("EmployeeRelatives", fields: [employeeId], references: [employeeId], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([employeeId])
+  @@index([village])
+  @@index([mandal])
+}
+
+model EmployeeTask {
+  id              String    @id @default(cuid())
+  employeeId      String
+  employee        User      @relation("EmployeeTasks", fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  
+  title           String
+  description     String?   @db.Text
+  category        String?   // 'SCHOOL_VISIT', 'STUDENT_FOLLOWUP', 'DOCUMENT_VERIFICATION', 'OFFICE_WORK', 'COLLEGE_DUTY', 'OTHER'
+  assignedBy      String?   // e.g. "Principal", "Director", "Admin", etc.
+  
+  startDate       DateTime  @default(now())
+  endDate         DateTime  // Target completion / due date
+  
+  priority        String    @default("MEDIUM") // 'LOW', 'MEDIUM', 'HIGH', 'URGENT'
+  status          String    @default("PENDING") // 'PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'
+  
+  completedAt     DateTime?
+  completionNotes String?   @db.Text
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+  @@index([endDate])
+}
+
+model College {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  name            String
+  logo            String?
+  phone           String?
+  email           String?
+  address         String?
+  contactPerson   String?
+  isActive          Boolean   @default(true)
+  maxStudents       Int       @default(5000)
+
+  // Subscription & Permission Limits
+  maxAgms           Int       @default(2)
+  maxTelecallers    Int       @default(5)
+  maxEmployees      Int       @default(10)
+  subscriptionPlan  String    @default("YEARLY") // MONTHLY, QUARTERLY, HALF_YEARLY, YEARLY
+  subscriptionPrice Float     @default(0)
+  subscriptionStart DateTime  @default(now())
+  subscriptionEnd   DateTime?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  users             User[]
+  students          Student[]
+  schools           ConfigValue[]
+  callRecords       SpxCallRecord[]
+}
+
+model CollegeBranch {
+  id          String    @id @default(cuid())
+  employeeId  String?
+  name        String
+  code        String?   @unique
+  location    String?
+  phone       String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  students    Student[]
+
+  @@index([name])
+  @@index([employeeId])
+}
+
+model InstitutionVisit {
+  id               String    @id @default(cuid())
+  employeeId       String
+  employee         User      @relation("EmployeeInstitutionVisits", fields: [employeeId], references: [employeeId], onDelete: Cascade)
+  
+  type             String    @default("SCHOOL") // "SCHOOL" or "TUITION" or "COLLEGE"
+  name             String    // School / Tuition Center name
+  contactPerson    String?   // Headmaster, Incharge, Tutor name
+  phone            String?
+  village          String?
+  mandal           String?
+  district         String?
+  address          String?
+  
+  studentsMetCount Int       @default(0) // Approximate 10th students addressed
+  visitDate        DateTime  @default(now())
+  remarks          String?   @db.Text
+  
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([employeeId])
+  @@index([visitDate])
+  @@index([type])
+}
+
+// ==========================================
+// SPX VOICE AI INTEGRATION CALL RECORDS
+// ==========================================
+
+model SpxCallRecord {
+  id               String    @id @default(cuid())
+  spxCallId        String    @unique
+  collegeId        String
+  college          College   @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  studentId        String?
+  student          Student?  @relation(fields: [studentId], references: [id], onDelete: SetNull)
+
+  direction        String    // 'INBOUND' | 'OUTBOUND'
+  status           String    @default("COMPLETED")
+  outcome          String?
+
+  startedAt        DateTime?
+  endedAt          DateTime?
+  durationSeconds  Int       @default(0)
+
+  summary          String?   @db.Text
+  studentInterest  String?
+  collectedInfo    Json?
+
+  followUpRequired Boolean   @default(false)
+  followUpDate     DateTime?
+  followUpType     String?
+
+  recordingUrl     String?
+  idempotencyKey   String?   @unique
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([collegeId])
+  @@index([studentId])
+  @@index([spxCallId])
+  @@index([createdAt])
+}
+
+

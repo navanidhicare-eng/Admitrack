@@ -1,0 +1,743 @@
+'use client';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { ArrowLeft, Save, Plus, User, Phone, GraduationCap, MapPin, Info, CheckCircle } from 'lucide-react';
+import Link from 'next/link';
+
+export default function AddStudentPage() {
+  const router = useRouter();
+  const [configs, setConfigs] = useState<any[]>([]);
+  
+  const [formData, setFormData] = useState({
+    studentName: '',
+    gender: '',
+    fatherName: '',
+    occupation: '',
+    phone: '',
+    whatsapp: '',
+    group: '',
+    visitNumber: '',
+    schoolName: '',
+    schoolArea: '',
+    marks: '',
+    remarks: '',
+    district: '',
+    mandal: '',
+    village: '',
+    studyInterestedAt: '',
+    educationStage: '',
+    ableToBearFee: '',
+    schoolDistrict: '',
+    schoolMandal: '',
+    schoolVillage: '',
+    doorstepCompleted: false,
+    address: '',
+  });
+
+  const [sameAsSchoolAddress, setSameAsSchoolAddress] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [isSuccessScreen, setIsSuccessScreen] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
+  const [schoolStats, setSchoolStats] = useState<{ collected: number } | null>(null);
+  const [phoneExistsError, setPhoneExistsError] = useState('');
+  const [isCheckingPhone, setIsCheckingPhone] = useState(false);
+
+  // Check if phone number already exists
+  useEffect(() => {
+    const checkPhone = async () => {
+      const clean = formData.phone ? formData.phone.replace(/\D/g, '') : '';
+      if (clean.length === 10) {
+        setIsCheckingPhone(true);
+        try {
+          const res = await fetch(`/api/students/check-phone?phone=${encodeURIComponent(clean)}`);
+          const data = await res.json();
+          if (data.exists) {
+            setPhoneExistsError('This mobile number is already registered.');
+          } else {
+            setPhoneExistsError('');
+          }
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setIsCheckingPhone(false);
+        }
+      } else {
+        setPhoneExistsError('');
+      }
+    };
+    
+    // Add a small debounce
+    const timeoutId = setTimeout(() => {
+      checkPhone();
+    }, 400);
+    
+    return () => clearTimeout(timeoutId);
+  }, [formData.phone]);
+
+  useEffect(() => {
+    if (formData.schoolName) {
+      fetch(`/api/schools/stats?schoolName=${encodeURIComponent(formData.schoolName)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.collected !== undefined) {
+            setSchoolStats(data);
+          }
+        });
+    } else {
+      setSchoolStats(null);
+    }
+  }, [formData.schoolName]);
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(data => {
+        if(data.configs) setConfigs(data.configs);
+      });
+  }, []);
+
+  const getByType = (t: string) => configs.filter(c => c.type === t);
+  const getByParent = (t: string, parentId: string) => configs.filter(c => c.type === t && c.parentId === parentId);
+
+  const handleSameAsSchoolAddressToggle = (checked: boolean) => {
+    setSameAsSchoolAddress(checked);
+    if (checked) {
+      if (formData.schoolDistrict) {
+        setFormData(prev => ({
+          ...prev,
+          district: prev.schoolDistrict,
+          mandal: prev.schoolMandal,
+          village: prev.schoolVillage,
+        }));
+      } else {
+        alert('Please select Previous School (District, Mandal, Village) first.');
+      }
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    if (name === 'phone' || name === 'whatsapp') {
+      // Clean phone numbers: remove all non-digits
+      let cleaned = value.replace(/\D/g, '');
+      // If user pasted starting with 91 (12 digits) or 0 (11 digits), keep 10 digits
+      if (cleaned.length === 12 && cleaned.startsWith('91')) {
+        cleaned = cleaned.slice(2);
+      } else if (cleaned.length === 11 && cleaned.startsWith('0')) {
+        cleaned = cleaned.slice(1);
+      } else if (cleaned.length > 10) {
+        cleaned = cleaned.slice(-10);
+      }
+      setFormData({ ...formData, [name]: cleaned });
+      return;
+    }
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSave = async (e: React.FormEvent, addAnother = false, keepSchool = false) => {
+    e.preventDefault();
+    if (phoneExistsError) {
+      setError('Cannot save. ' + phoneExistsError);
+      return;
+    }
+
+    if (formData.phone) {
+      const clean = formData.phone.replace(/\D/g, '');
+      if (clean.length > 0 && clean.length < 10) {
+        setError('Please enter a valid 10-digit mobile number.');
+        return;
+      }
+    }
+    
+    setIsLoading(true);
+    setError('');
+    setSuccessMsg('');
+
+    try {
+      const payload = {
+        ...formData,
+        // Save the village as the schoolArea string since it's a string in the DB
+        schoolArea: formData.schoolVillage || '',
+        whatsapp: formData.whatsapp,
+      };
+      
+      const res = await fetch('/api/students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        if (addAnother) {
+          const schoolRetained = formData.schoolName;
+          if (keepSchool) {
+            setFormData(prev => ({
+              ...prev,
+              studentName: '',
+              gender: '',
+              fatherName: '',
+              occupation: '',
+              phone: '',
+              whatsapp: '',
+              group: '',
+              visitNumber: '',
+              marks: '',
+              remarks: '',
+              address: '',
+              studyInterestedAt: '',
+              educationStage: '',
+              ableToBearFee: '',
+              doorstepCompleted: false,
+              ...(sameAsSchoolAddress ? {} : { district: '', mandal: '', village: '' }),
+            }));
+            setSuccessMsg(`Student added! Retained school: "${schoolRetained}". Enter next student details.`);
+          } else {
+            setFormData({
+              studentName: '',
+              gender: '',
+              fatherName: '',
+              occupation: '',
+              phone: '',
+              whatsapp: '',
+              group: '',
+              visitNumber: '',
+              schoolName: '',
+              schoolArea: '',
+              schoolDistrict: '',
+              schoolMandal: '',
+              schoolVillage: '',
+              marks: '',
+              remarks: '',
+              district: '',
+              mandal: '',
+              village: '',
+              studyInterestedAt: '',
+              educationStage: '',
+              ableToBearFee: '',
+              doorstepCompleted: false,
+              address: '',
+            });
+            setSameAsSchoolAddress(false);
+            setSuccessMsg('Student added successfully! You can add another.');
+          }
+          window.scrollTo(0, 0);
+        } else {
+          setIsSuccessScreen(true);
+        }
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to save student.');
+      }
+    } catch (err) {
+      setError('An unexpected error occurred.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="container">
+      <header className="app-header" style={{ margin: '-1rem -1rem 1rem -1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <Link href="/" className="btn-icon">
+          <ArrowLeft />
+        </Link>
+        <h1 style={{ margin: 0, fontSize: '1.25rem' }}>Add Student</h1>
+      </header>
+
+      {error && (
+        <div style={{ padding: '0.75rem', backgroundColor: '#fef2f2', color: 'var(--danger)', borderRadius: 'var(--radius-md)', marginBottom: '1rem' }}>
+          {error}
+        </div>
+      )}
+
+      {successMsg && !isSuccessScreen && (
+        <div style={{ padding: '0.75rem', backgroundColor: '#d1fae5', color: '#065f46', borderRadius: 'var(--radius-md)', marginBottom: '1rem' }}>
+          {successMsg}
+        </div>
+      )}
+
+      {isSuccessScreen ? (
+        <div className="card" style={{ textAlign: 'center', padding: '4rem 2rem', marginTop: '2rem' }}>
+          <div style={{ width: '80px', height: '80px', backgroundColor: '#dcfce7', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem auto' }}>
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </div>
+          <h2 style={{ fontSize: '1.75rem', fontWeight: 700, color: '#166534', marginBottom: '0.5rem' }}>Success!</h2>
+          <p style={{ color: '#475569', fontSize: '1.1rem', marginBottom: '2.5rem' }}>
+            <strong>{formData.studentName}</strong> has been successfully added to the database.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxWidth: '340px', margin: '0 auto' }}>
+            {formData.schoolName && (
+              <button 
+                type="button"
+                className="btn" 
+                style={{ backgroundColor: '#059669', color: '#fff', padding: '0.85rem', fontWeight: 700, borderRadius: '10px' }}
+                onClick={() => {
+                  setFormData(prev => ({
+                    ...prev,
+                    studentName: '', gender: '', fatherName: '', occupation: '', phone: '', whatsapp: '', group: '', visitNumber: '', marks: '', remarks: '', address: '', studyInterestedAt: '', educationStage: '', ableToBearFee: '', doorstepCompleted: false,
+                    ...(sameAsSchoolAddress ? {} : { district: '', mandal: '', village: '' }),
+                  }));
+                  setIsSuccessScreen(false);
+                  setSuccessMsg(`Adding next student for "${formData.schoolName}". School location is retained.`);
+                  window.scrollTo(0, 0);
+                }}
+              >
+                🏫 Add Another from {formData.schoolName}
+              </button>
+            )}
+            <button 
+              type="button"
+              className="btn btn-primary" 
+              style={{ padding: '0.85rem' }}
+              onClick={() => {
+                setFormData({
+                  studentName: '', gender: '', fatherName: '', occupation: '', phone: '', whatsapp: '', group: '', visitNumber: '', schoolName: '', schoolArea: '', schoolDistrict: '', schoolMandal: '', schoolVillage: '', marks: '', remarks: '', district: '', mandal: '', village: '', studyInterestedAt: '', educationStage: '', ableToBearFee: '', doorstepCompleted: false, address: ''
+                });
+                setSameAsSchoolAddress(false);
+                setIsSuccessScreen(false);
+                setSuccessMsg('');
+                window.scrollTo(0, 0);
+              }}
+            >
+              {formData.schoolName ? 'Add Student from New School' : 'Add Another Student'}
+            </button>
+            <Link href="/employee" className="btn btn-outline" style={{ padding: '0.85rem' }}>
+              Go to Dashboard
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={(e) => handleSave(e, false)}>
+          {/* Section 1: Personal Details */}
+          <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.1rem', fontWeight: 600, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '0.75rem' }}>
+              <User size={18} color="#3b82f6" /> Personal Details
+            </h3>
+            
+            <div className="form-group">
+              <label className="form-label" htmlFor="studentName">Student Name</label>
+              <input type="text" id="studentName" name="studentName" className="form-control" value={formData.studentName} onChange={handleChange} />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Gender</label>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                {['Male', 'Female', 'Other'].map(g => (
+                  <label key={g} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '0.75rem', border: formData.gender === g ? '2px solid #3b82f6' : '1px solid #cbd5e1', borderRadius: '8px', cursor: 'pointer', background: formData.gender === g ? '#eff6ff' : '#fff', color: formData.gender === g ? '#1e40af' : '#475569', fontWeight: formData.gender === g ? 600 : 400, transition: 'all 0.2s' }}>
+                    <input type="radio" name="gender" value={g} checked={formData.gender === g} onChange={handleChange} style={{ display: 'none' }} />
+                    {g}
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="fatherName">Father's Name</label>
+              <input type="text" id="fatherName" name="fatherName" className="form-control" value={formData.fatherName} onChange={handleChange} />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="occupation">Occupation</label>
+              <input 
+                type="text"
+                id="occupation" 
+                name="occupation" 
+                className="form-control" 
+                placeholder="e.g. Farmer, Business, Teacher, Driver"
+                value={formData.occupation} 
+                onChange={handleChange} 
+              />
+            </div>
+          </div>
+
+          {/* Section 2: Contact Information */}
+          <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.1rem', fontWeight: 600, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '0.75rem' }}>
+              <Phone size={18} color="#10b981" /> Contact Information
+            </h3>
+
+            <div className="form-group" style={{ position: 'relative' }}>
+              <label className="form-label" htmlFor="phone">Phone Number</label>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <span style={{
+                  padding: '0.625rem 0.85rem',
+                  backgroundColor: '#f1f5f9',
+                  border: '1px solid #cbd5e1',
+                  borderRight: 'none',
+                  borderRadius: '8px 0 0 8px',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  userSelect: 'none'
+                }}>
+                  +91
+                </span>
+                <input 
+                  type="tel" 
+                  id="phone" 
+                  name="phone" 
+                  className="form-control" 
+                  placeholder="10-digit mobile number"
+                  maxLength={10}
+                  value={formData.phone} 
+                  onChange={handleChange} 
+                  style={{ 
+                    borderRadius: '0 8px 8px 0',
+                    borderColor: phoneExistsError ? 'var(--danger)' : '' 
+                  }} 
+                />
+              </div>
+              {isCheckingPhone && (
+                <span style={{ position: 'absolute', right: '12px', top: '38px', fontSize: '0.75rem', color: '#2563eb', fontWeight: 600 }}>
+                  Checking...
+                </span>
+              )}
+              {phoneExistsError && <span className="form-error" style={{ display: 'block', marginTop: '4px' }}>{phoneExistsError}</span>}
+              {!phoneExistsError && formData.phone && formData.phone.length > 0 && formData.phone.length < 10 && (
+                <span style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                  {10 - formData.phone.length} more digit{10 - formData.phone.length > 1 ? 's' : ''} needed
+                </span>
+              )}
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="whatsapp">Alternate Number (Optional)</label>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <span style={{
+                  padding: '0.625rem 0.85rem',
+                  backgroundColor: '#f1f5f9',
+                  border: '1px solid #cbd5e1',
+                  borderRight: 'none',
+                  borderRadius: '8px 0 0 8px',
+                  color: '#475569',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  userSelect: 'none'
+                }}>
+                  +91
+                </span>
+                <input 
+                  type="tel" 
+                  id="whatsapp" 
+                  name="whatsapp" 
+                  className="form-control" 
+                  placeholder="10-digit alternate mobile number"
+                  maxLength={10}
+                  value={formData.whatsapp} 
+                  onChange={handleChange} 
+                  style={{ borderRadius: '0 8px 8px 0' }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Academic Details */}
+          <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.1rem', fontWeight: 600, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '0.75rem' }}>
+              <GraduationCap size={18} color="#8b5cf6" /> Academic Details
+            </h3>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="group">Group Opting</label>
+              <select id="group" name="group" className="form-control" value={formData.group} onChange={handleChange}>
+                <option value="">Select Group</option>
+                {getByType('GROUP').map(g => (
+                  <option key={g.id} value={g.value}>{g.value}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Previous School (District)</label>
+              <select id="schoolDistrict" name="schoolDistrict" className="form-control" value={formData.schoolDistrict} onChange={(e) => {
+                const val = e.target.value;
+                setFormData(prev => ({
+                  ...prev, 
+                  schoolDistrict: val, 
+                  schoolMandal: '', 
+                  schoolVillage: '', 
+                  schoolName: '',
+                  ...(sameAsSchoolAddress ? { district: val, mandal: '', village: '' } : {})
+                }));
+              }}>
+                <option value="">Select District</option>
+                {getByType('DISTRICT').map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+
+            {formData.schoolDistrict && (
+              <div className="form-group">
+                <label className="form-label">Previous School (Mandal)</label>
+                <select id="schoolMandal" name="schoolMandal" className="form-control" value={formData.schoolMandal} onChange={(e) => {
+                  const val = e.target.value;
+                  setFormData(prev => ({
+                    ...prev, 
+                    schoolMandal: val, 
+                    schoolVillage: '', 
+                    schoolName: '',
+                    ...(sameAsSchoolAddress ? { mandal: val, village: '' } : {})
+                  }));
+                }}>
+                  <option value="">Select Mandal</option>
+                  {getByParent('MANDAL', formData.schoolDistrict).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+                </select>
+              </div>
+            )}
+
+            {formData.schoolMandal && (
+              <div className="form-group">
+                <label className="form-label">Previous School (Village)</label>
+                <select id="schoolVillage" name="schoolVillage" className="form-control" value={formData.schoolVillage} onChange={(e) => {
+                  const val = e.target.value;
+                  setFormData(prev => ({
+                    ...prev, 
+                    schoolVillage: val, 
+                    schoolName: '',
+                    ...(sameAsSchoolAddress ? { village: val } : {})
+                  }));
+                }}>
+                  <option value="">Select Village</option>
+                  {getByParent('VILLAGE', formData.schoolMandal).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+                </select>
+              </div>
+            )}
+
+            {formData.schoolVillage && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="schoolName">School Name</label>
+                <select id="schoolName" name="schoolName" className="form-control" value={formData.schoolName} onChange={handleChange}>
+                  <option value="">Select School</option>
+                  {getByParent('SCHOOL', formData.schoolVillage).map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="marks">Marks / Grade / GPA</label>
+              <input type="text" id="marks" name="marks" className="form-control" value={formData.marks} onChange={handleChange} placeholder="e.g., 95%, 9.5, 950" />
+            </div>
+
+            {formData.schoolName && schoolStats && (
+              <div style={{ marginTop: '1rem', padding: '1rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                {(() => {
+                  const schoolConfig = configs.find(c => c.value === formData.schoolName && c.type === 'SCHOOL');
+                  const strength = schoolConfig?.strength || 0;
+                  
+                  const gradeMap: Record<string, string> = {
+                    'A+': 'A+ (Vizag Hostel Schools)',
+                    'A': 'A (Local Corporate Schools)',
+                    'B': 'B (Local Private Schools)',
+                    'C': 'C (ZPH Schools)'
+                  };
+                  
+                  const grade = schoolConfig?.grade ? gradeMap[schoolConfig.grade] || schoolConfig.grade : 'N/A';
+                  
+                  const collected = schoolStats.collected;
+                  const remaining = Math.max(0, strength - collected);
+                  const percentage = strength > 0 ? Math.min(100, Math.round((collected / strength) * 100)) : 0;
+                  
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                        <span style={{ fontWeight: 600 }}>School Stats</span>
+                        <span style={{ background: '#dbeafe', color: '#1e40af', padding: '0.1rem 0.5rem', borderRadius: '4px', fontWeight: 500 }}>Grade: {grade}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>
+                        <span>Total Strength: {strength}</span>
+                        <span>Collected: {collected}</span>
+                        <span>Remaining: {remaining}</span>
+                      </div>
+                      {strength > 0 ? (
+                        <div style={{ height: '8px', width: '100%', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${percentage}%`, background: percentage >= 100 ? '#10b981' : '#3b82f6', transition: 'width 0.3s ease' }}></div>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.75rem', color: '#f59e0b', marginTop: '0.5rem' }}>Total strength is not configured for this school.</div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: Location & Status */}
+          <div style={{ background: '#ffffff', padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)' }}>
+            <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.1rem', fontWeight: 600, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '0.75rem' }}>
+              <MapPin size={18} color="#f59e0b" /> Location & Preferences
+            </h3>
+
+            {/* Same as School Address Checkbox */}
+            <div 
+              style={{ 
+                marginBottom: '1.25rem', 
+                padding: '0.85rem 1rem', 
+                borderRadius: '12px', 
+                background: sameAsSchoolAddress ? '#eff6ff' : '#f8fafc', 
+                border: sameAsSchoolAddress ? '1.5px solid #3b82f6' : '1px solid #e2e8f0',
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '0.75rem', 
+                cursor: 'pointer',
+                transition: 'all 0.2s ease' 
+              }}
+              onClick={() => handleSameAsSchoolAddressToggle(!sameAsSchoolAddress)}
+            >
+              <input 
+                type="checkbox" 
+                id="sameAsSchoolAddress" 
+                checked={sameAsSchoolAddress} 
+                onChange={(e) => handleSameAsSchoolAddressToggle(e.target.checked)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#2563eb' }}
+                onClick={(e) => e.stopPropagation()}
+              />
+              <label 
+                htmlFor="sameAsSchoolAddress" 
+                style={{ margin: 0, cursor: 'pointer', display: 'flex', flexDirection: 'column' }}
+              >
+                <span style={{ fontSize: '0.9rem', fontWeight: 600, color: sameAsSchoolAddress ? '#1e40af' : '#1e293b' }}>
+                  Residential Address is Same as School address
+                </span>
+                <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                  Auto-fills Residence District, Mandal, and Village from School Address
+                </span>
+              </label>
+            </div>
+
+            {sameAsSchoolAddress && formData.village && (
+              <div style={{ marginBottom: '1rem', padding: '0.5rem 0.75rem', background: '#dcfce7', border: '1px solid #86efac', borderRadius: '8px', fontSize: '0.8rem', color: '#166534', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <CheckCircle size={15} color="#16a34a" />
+                <span>Address copied from School. You can enter Landmark details below.</span>
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="district">Residence District</label>
+              <select id="district" name="district" className="form-control" value={formData.district} onChange={(e) => {
+                setSameAsSchoolAddress(false);
+                setFormData({...formData, district: e.target.value, mandal: '', village: ''});
+              }}>
+                <option value="">Select District</option>
+                {getByType('DISTRICT').map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+
+            {formData.district && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="mandal">Residence Mandal</label>
+                <select id="mandal" name="mandal" className="form-control" value={formData.mandal} onChange={(e) => {
+                  setSameAsSchoolAddress(false);
+                  setFormData({...formData, mandal: e.target.value, village: ''});
+                }}>
+                  <option value="">Select Mandal</option>
+                  {getByParent('MANDAL', formData.district).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+                </select>
+              </div>
+            )}
+
+            {formData.mandal && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="village">Residence Village</label>
+                <select id="village" name="village" className="form-control" value={formData.village} onChange={(e) => {
+                  setSameAsSchoolAddress(false);
+                  handleChange(e);
+                }}>
+                  <option value="">Select Village</option>
+                  {getByParent('VILLAGE', formData.mandal).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+                </select>
+              </div>
+            )}
+
+            {formData.village && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="address">Landmark</label>
+                <input type="text" id="address" name="address" className="form-control" value={formData.address} onChange={handleChange} placeholder="Enter landmark details" />
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="studyInterestedAt">Study Interested At</label>
+              <select id="studyInterestedAt" name="studyInterestedAt" className="form-control" value={formData.studyInterestedAt} onChange={handleChange}>
+                <option value="">Select Interest</option>
+                {getByType('STUDY_INTEREST').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="educationStage">Current Education Stage</label>
+              <select id="educationStage" name="educationStage" className="form-control" value={formData.educationStage} onChange={handleChange}>
+                <option value="">Select Stage</option>
+                {getByType('EDUCATION_STAGE').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="ableToBearFee">Able to Bear Fee?</label>
+              <select id="ableToBearFee" name="ableToBearFee" className="form-control" value={formData.ableToBearFee} onChange={handleChange}>
+                <option value="">Select Option</option>
+                {getByType('FEE_BEARABLE').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="visitNumber">Visit No.</label>
+              <input type="text" id="visitNumber" name="visitNumber" className="form-control" value={formData.visitNumber} onChange={handleChange} />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label" htmlFor="remarks">Remarks</label>
+              <textarea id="remarks" name="remarks" className="form-control" rows={3} value={formData.remarks} onChange={handleChange} placeholder="Any special notes?"></textarea>
+            </div>
+
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '1.5rem', padding: '1rem', background: formData.doorstepCompleted ? '#ecfdf5' : '#f8fafc', border: formData.doorstepCompleted ? '1px solid #10b981' : '1px solid #e2e8f0', borderRadius: '12px', transition: 'all 0.2s' }}>
+              <input 
+                type="checkbox" 
+                id="doorstepCompleted" 
+                name="doorstepCompleted" 
+                checked={formData.doorstepCompleted} 
+                onChange={(e) => setFormData({...formData, doorstepCompleted: e.target.checked})} 
+                style={{ width: '1.5rem', height: '1.5rem', cursor: 'pointer', accentColor: '#10b981' }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <label className="form-label" htmlFor="doorstepCompleted" style={{ marginBottom: 0, cursor: 'pointer', color: formData.doorstepCompleted ? '#065f46' : '#334155', fontWeight: 600 }}>
+                  Doorstep Visit Completed
+                </label>
+                <span style={{ fontSize: '0.8rem', color: formData.doorstepCompleted ? '#047857' : '#64748b' }}>Check this if the executive has visited the student's home.</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="form-actions" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <button type="submit" className="btn btn-primary" disabled={isLoading} onClick={(e) => handleSave(e, false)} style={{ padding: '1rem', fontSize: '1.1rem', borderRadius: '12px' }}>
+              <Save size={20} /> {isLoading ? 'Saving...' : 'Save Student Details'}
+            </button>
+            
+            {formData.schoolName && (
+              <button 
+                type="button" 
+                className="btn" 
+                disabled={isLoading} 
+                onClick={(e) => handleSave(e, true, true)} 
+                style={{ padding: '1rem', borderRadius: '12px', background: '#059669', color: '#fff', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+              >
+                🏫 Save & Add Next (Same School)
+              </button>
+            )}
+
+            <button type="button" className="btn btn-outline" disabled={isLoading} onClick={(e) => handleSave(e, true, false)} style={{ padding: '1rem', borderRadius: '12px', background: '#fff' }}>
+              <Plus size={20} /> {formData.schoolName ? 'Save & Add (Different School)' : 'Save & Add Another'}
+            </button>
+
+            <Link href="/" className="btn btn-outline" style={{ border: 'none', color: '#64748b', marginTop: '0.25rem', textAlign: 'center' }}>
+              Cancel & Go Back
+            </Link>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}

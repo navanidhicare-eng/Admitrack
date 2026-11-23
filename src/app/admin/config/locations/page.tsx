@@ -1,0 +1,260 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { Trash2, Plus, ChevronLeft, ChevronRight, Edit2, Check, X } from 'lucide-react';
+
+function LocationSection({ type, items, configs, handleDelete, handleAdd, handleEdit, addValues, setAddValues, getByType }: any) {
+  // Editing state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  // Filter items based on parent selection
+  let filteredItems = items;
+  const parentValue = addValues[`${type}_parent`];
+  
+  if (type === 'MANDAL' && parentValue) {
+    filteredItems = items.filter((item: any) => item.parentId === parentValue);
+  } else if (type === 'VILLAGE' && parentValue) {
+    filteredItems = items.filter((item: any) => item.parentId === parentValue);
+  }
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+  
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [parentValue, items.length]);
+
+  const totalPages = Math.ceil(filteredItems.length / itemsPerPage) || 1;
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const currentItems = filteredItems.slice(startIndex, startIndex + itemsPerPage);
+
+  const startEdit = (item: any) => {
+    setEditingId(item.id);
+    setEditValue(item.value);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+  };
+
+  const saveEdit = () => {
+    if (!editValue) return;
+    handleEdit(editingId, editValue);
+    setEditingId(null);
+  };
+
+  return (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column', minHeight: '600px', marginBottom: 0 }}>
+      <h2 style={{ fontSize: '1.1rem', marginBottom: '1rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '0.5rem' }}>
+        {type}
+      </h2>
+      
+      {type === 'MANDAL' && (
+        <select className="form-control" style={{ marginBottom: '0.5rem' }} value={addValues[`${type}_parent`] || ''} onChange={(e) => setAddValues((prev: any) => ({ ...prev, [`${type}_parent`]: e.target.value }))}>
+          <option value="">-- Select Parent District --</option>
+          {getByType('DISTRICT').map((d: any) => <option key={d.id} value={d.id}>{d.value}</option>)}
+        </select>
+      )}
+      
+      {type === 'VILLAGE' && (
+        <select className="form-control" style={{ marginBottom: '0.5rem' }} value={addValues[`${type}_parent`] || ''} onChange={(e) => setAddValues((prev: any) => ({ ...prev, [`${type}_parent`]: e.target.value }))}>
+          <option value="">-- Select Parent Mandal --</option>
+          {getByType('MANDAL').map((d: any) => <option key={d.id} value={d.id}>{d.value}</option>)}
+        </select>
+      )}
+
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+        <input 
+          type="text" 
+          className="form-control" 
+          placeholder={`Add new ${type.toLowerCase()}...`} 
+          value={addValues[type] || ''}
+          onChange={(e) => setAddValues((prev: any) => ({ ...prev, [type]: e.target.value }))}
+          onKeyDown={(e) => e.key === 'Enter' && handleAdd(type, addValues[`${type}_parent`])}
+        />
+        <button className="btn btn-primary" onClick={() => handleAdd(type, addValues[`${type}_parent`])} style={{ padding: '0.5rem' }}>
+          <Plus size={20} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        {currentItems.map((item: any) => {
+          const parent = configs.find((c: any) => c.id === item.parentId);
+          
+          if (editingId === item.id) {
+            return (
+              <div key={item.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', backgroundColor: '#f8fafc', padding: '0.75rem', borderRadius: '4px', border: '1px solid #3b82f6' }}>
+                <input type="text" className="form-control" value={editValue} onChange={e => setEditValue(e.target.value)} />
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                  <button onClick={saveEdit} className="btn btn-primary" style={{ padding: '0.25rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Check size={16} /> Save</button>
+                  <button onClick={cancelEdit} className="btn btn-outline" style={{ padding: '0.25rem 0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}><X size={16} /> Cancel</button>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8fafc', padding: '0.75rem', borderRadius: '4px', border: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>{item.value}</span>
+                {parent && <span className="text-muted" style={{ fontSize: '0.75rem' }}>in {parent.value}</span>}
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => startEdit(item)} style={{ background: 'none', border: 'none', color: '#3b82f6', cursor: 'pointer', padding: '0.25rem' }}>
+                  <Edit2 size={16} />
+                </button>
+                <button onClick={() => handleDelete(item.id)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '0.25rem' }}>
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {filteredItems.length === 0 && <p className="text-muted" style={{ fontSize: '0.875rem' }}>No {type.toLowerCase()}s found.</p>}
+      </div>
+
+      {filteredItems.length > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e2e8f0' }}>
+          <span style={{ fontSize: '0.875rem', color: '#64748b' }}>
+            Showing {startIndex + 1}-{Math.min(startIndex + itemsPerPage, filteredItems.length)} of {filteredItems.length}
+          </span>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button 
+              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              disabled={currentPage === 1}
+              style={{ padding: '0.25rem 0.5rem', border: '1px solid #e2e8f0', borderRadius: '4px', background: currentPage === 1 ? '#f8fafc' : 'white', cursor: currentPage === 1 ? 'not-allowed' : 'pointer' }}
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <button 
+              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+              disabled={currentPage === totalPages}
+              style={{ padding: '0.25rem 0.5rem', border: '1px solid #e2e8f0', borderRadius: '4px', background: currentPage === totalPages ? '#f8fafc' : 'white', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer' }}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function LocationsConfigPage() {
+  const [configs, setConfigs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  const [addValues, setAddValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetchConfigs();
+  }, []);
+
+  const fetchConfigs = async () => {
+    try {
+      const res = await fetch(`/api/config?t=${Date.now()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.configs) setConfigs(data.configs);
+    } catch (err) {
+      console.error('Failed to fetch configs:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getByType = (t: string) => configs.filter(c => c.type === t);
+
+  const handleAdd = async (type: string, parentId: string | null = null) => {
+    const value = addValues[type];
+    if (!value || !value.trim()) return;
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, value: value.trim(), parentId })
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        setAddValues(prev => ({ ...prev, [type]: '' }));
+        await fetchConfigs();
+      } else {
+        alert(data.error || 'Failed to add location');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error adding location');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this location?')) return;
+    try {
+      const res = await fetch(`/api/config/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setConfigs(configs.filter(c => c.id !== id));
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to delete');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error deleting location');
+    }
+  };
+
+  const handleEdit = async (id: string, value: string) => {
+    if (!value || !value.trim()) return;
+    try {
+      const res = await fetch(`/api/config/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: value.trim() })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchConfigs();
+      } else {
+        alert(data.error || 'Failed to update location');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Error updating location');
+    }
+  };
+
+  return (
+    <div>
+      <h1 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '2rem' }}>Manage Locations</h1>
+
+      {loading ? <p>Loading...</p> : (
+        <div style={{ 
+          display: 'grid', 
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', 
+          gap: '2rem',
+          alignItems: 'start'
+        }}>
+          {['DISTRICT', 'MANDAL', 'VILLAGE'].map(type => {
+            const items = getByType(type);
+            return (
+              <LocationSection 
+                key={type}
+                type={type}
+                items={items}
+                configs={configs}
+                handleAdd={handleAdd}
+                handleEdit={handleEdit}
+                handleDelete={handleDelete}
+                addValues={addValues}
+                setAddValues={setAddValues}
+                getByType={getByType}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

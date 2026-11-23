@@ -1,0 +1,107 @@
+'use client';
+
+import { useState } from 'react';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import { LayoutDashboard, Users, MapPin, Users2, GraduationCap, Activity, ClipboardList, LogOut, Menu, X, BookOpen, UserCheck, HelpCircle, Award, Building2 } from 'lucide-react';
+
+export default function AdminSidebar() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [isOpen, setIsOpen] = useState(false);
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    router.push('/login');
+    router.refresh();
+  };
+
+  const menuItems = [
+    { name: 'Dashboard', path: '/admin', icon: LayoutDashboard },
+    { name: 'Pending Approvals', path: '/admin/pending-students', icon: UserCheck },
+    { name: 'Students', path: '/admin/students', icon: BookOpen },
+    { name: 'Study Books', path: '/admin/books', icon: BookOpen },
+    { name: 'Study Videos', path: '/admin/videos', icon: Activity },
+    { name: 'Career Questions', path: '/admin/questions', icon: HelpCircle },
+    { name: 'Test Reports', path: '/admin/test-reports', icon: Award },
+    { name: 'Users', path: '/admin/users', icon: Users },
+    { name: 'Colleges', path: '/admin/colleges', icon: Building2 },
+    { name: 'Locations', path: '/admin/config/locations', icon: MapPin },
+    { name: 'Groups', path: '/admin/config/groups', icon: Users2 },
+    { name: 'Schools', path: '/admin/config/schools', icon: GraduationCap },
+    { name: 'Statuses', path: '/admin/config/statuses', icon: Activity },
+    { name: 'Survey Fields', path: '/admin/config/survey', icon: ClipboardList },
+  ];
+
+  return (
+    <aside className="admin-sidebar" style={{ boxShadow: '4px 0 10px rgba(0,0,0,0.1)' }}>
+      <div style={{ padding: '1.5rem', borderBottom: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: '#38bdf8' }}>Admin Panel</h2>
+        <button 
+          className="mobile-only"
+          onClick={() => setIsOpen(!isOpen)}
+          style={{ background: 'transparent', border: 'none', color: '#f8fafc', cursor: 'pointer', padding: '0.25rem' }}
+        >
+          {isOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
+      </div>
+
+      <div style={{ display: isOpen ? 'flex' : 'none', flexDirection: 'column', flex: 1 }} className="admin-menu-wrapper">
+        <nav style={{ flex: 1, padding: '1rem 0', overflowY: 'auto' }}>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+          {menuItems.map(item => {
+            const Icon = item.icon;
+            const isActive = pathname === item.path || (pathname.startsWith(item.path) && item.path !== '/admin');
+            
+            return (
+              <li key={item.path}>
+                <Link 
+                  href={item.path} 
+                  onClick={() => setIsOpen(false)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '1rem',
+                    padding: '0.75rem 1.5rem',
+                    textDecoration: 'none',
+                    color: isActive ? '#fff' : '#94a3b8',
+                    backgroundColor: isActive ? '#1e293b' : 'transparent',
+                    borderLeft: isActive ? '4px solid #38bdf8' : '4px solid transparent',
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  <Icon size={20} />
+                  <span style={{ fontWeight: isActive ? 600 : 400 }}>{item.name}</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
+      <div style={{ padding: '1rem', borderTop: '1px solid #1e293b' }}>
+        <button 
+          onClick={handleLogout}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+            width: '100%',
+            padding: '0.75rem 1rem',
+            backgroundColor: 'transparent',
+            border: 'none',
+            color: '#f87171',
+            cursor: 'pointer',
+            textAlign: 'left',
+            borderRadius: '4px',
+            transition: 'background 0.2s'
+          }}
+        >
+          <LogOut size={20} />
+          <span>Logout</span>
+        </button>
+      </div>
+      </div>
+    </aside>
+  );
+}

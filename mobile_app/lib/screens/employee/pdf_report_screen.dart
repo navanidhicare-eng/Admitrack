@@ -1,0 +1,2693 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../services/api_service.dart';
+import '../../services/location_service.dart';
+import '../../utils/pdf_downloader.dart';
+
+class PdfReportScreen extends StatefulWidget {
+  const PdfReportScreen({super.key});
+
+  @override
+  State<PdfReportScreen> createState() => _PdfReportScreenState();
+}
+
+class _PdfReportScreenState extends State<PdfReportScreen> {
+  bool _loading = false;
+  bool _generatingPdf = false;
+  List<dynamic> _students = [];
+  String _employeeName = 'Employee';
+  String _collegeName = '';
+
+  // Date Range
+  bool _isAllTime = false;
+  DateTime _startDate = DateTime.now();
+  DateTime _endDate = DateTime.now();
+
+  // Report Category
+  String _reportType = 'all'; // 'all', 'new_students', 'visits', 'star_leads'
+
+  bool _isStarLead(dynamic s) {
+    if (s is! Map) return false;
+    final status = (s['leadStatus'] ?? '').toString().toLowerCase();
+    return status.contains('star') || status.contains('prime');
+  }
+
+  // Location Filters
+  String _filterMandal = '';
+  String _filterVillage = '';
+  String _filterSchool = '';
+  List<dynamic> _mandals = [];
+  List<dynamic> _villages = [];
+  List<dynamic> _schools = [];
+  List<dynamic> _institutionVisits = [];
+
+  // Available Columns to Download / Include
+  final List<Map<String, String>> _availableColumns = [
+    {'id': 'sno', 'label': 'S.No.'},
+    {'id': 'studentName', 'label': 'Student Name'},
+    {'id': 'fatherName', 'label': "Father's Name"},
+    {'id': 'occupation', 'label': 'Occupation'},
+    {'id': 'address', 'label': 'Address'},
+    {'id': 'gps', 'label': 'GPS'},
+    {'id': 'phone', 'label': 'Phone'},
+    {'id': 'whatsapp', 'label': 'Alt. Phone'},
+    {'id': 'group', 'label': 'Group'},
+    {'id': 'visitNumber', 'label': 'Visit No.'},
+    {'id': 'schoolName', 'label': 'School Name'},
+    {'id': 'doorstep', 'label': 'Doorstep'},
+    {'id': 'remarks', 'label': 'Remarks'},
+  ];
+
+  final List<String> _selectedColumns = [
+    'sno',
+    'studentName',
+    'fatherName',
+    'occupation',
+    'address',
+    'gps',
+    'phone',
+    'whatsapp',
+    'group',
+    'visitNumber',
+    'schoolName',
+    'doorstep',
+    'remarks',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadEmployeeName();
+    _fetchStats();
+    _fetchReportData();
+  }
+
+  Future<void> _loadEmployeeName() async {
+    try {
+      final session = await ApiService.getSession();
+      final prefs = await SharedPreferences.getInstance();
+      final storedName = prefs.getString('user_name') ?? session['name'];
+      final storedCollege = prefs.getString('employee_college');
+      if (mounted) {
+        setState(() {
+          if (storedName != null && storedName.isNotEmpty) {
+            _employeeName = storedName;
+          }
+          if (storedCollege != null && storedCollege.trim().isNotEmpty) {
+            _collegeName = storedCollege.trim();
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  String _formatApiDate(DateTime dt) {
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+  }
+
+  String _formatDisplayDate(DateTime dt) {
+    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+  }
+
+  String _getDayName(DateTime dt) {
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    if (dt.weekday >= 1 && dt.weekday <= 7) {
+      return days[dt.weekday - 1];
+    }
+    return '';
+  }
+
+  String _getDateKey(dynamic d) {
+    if (d == null) return '';
+    final s = d.toString().trim();
+    if (s.isEmpty) return '';
+    if (s.contains('T')) return s.split('T')[0];
+    final match = RegExp(r'^\d{4}-\d{2}-\d{2}').firstMatch(s);
+    if (match != null) return match.group(0)!;
+    final dt = DateTime.tryParse(s);
+    if (dt == null) return '';
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+  }
+
+  Map<String, String> _formatEntryDate(String dateKey) {
+    if (dateKey.isEmpty) {
+      return {'dateFormatted': '', 'dayName': ''};
+    }
+    final parts = dateKey.split('-');
+    if (parts.length == 3) {
+      final y = int.tryParse(parts[0]) ?? 2026;
+      final m = int.tryParse(parts[1]) ?? 1;
+      final d = int.tryParse(parts[2]) ?? 1;
+      final dt = DateTime(y, m, d);
+      return {
+        'dateFormatted': '${d.toString().padLeft(2, '0')}/${m.toString().padLeft(2, '0')}/$y',
+        'dayName': _getDayName(dt),
+      };
+    }
+    final dt = DateTime.tryParse(dateKey) ?? DateTime.now();
+    return {
+      'dateFormatted': _formatDisplayDate(dt),
+      'dayName': _getDayName(dt),
+    };
+  }
+
+  Future<void> _fetchStats() async {
+    try {
+      await ApiService.getConfigMap();
+      final res = await ApiService.getStudentFilters(
+        mandal: _filterMandal,
+        village: _filterVillage,
+      );
+      if (res['success'] == true && mounted) {
+        setState(() {
+          _mandals = res['mandals'] ?? [];
+          _villages = res['villages'] ?? [];
+          _schools = res['schools'] ?? [];
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _fetchReportData() async {
+    setState(() {
+      _loading = true;
+    });
+
+    try {
+      final studentsFuture = ApiService.getStudents(
+        limit: 10000,
+        startDate: _isAllTime ? null : _formatApiDate(_startDate),
+        endDate: _isAllTime ? null : _formatApiDate(_endDate),
+        reportType: _reportType,
+        mandal: _filterMandal.isNotEmpty ? _filterMandal : null,
+        village: _filterVillage.isNotEmpty ? _filterVillage : null,
+        schoolName: _filterSchool.isNotEmpty ? _filterSchool : null,
+      );
+
+      final instFuture = ApiService.getInstitutionVisits(
+        startDate: _isAllTime ? null : _formatApiDate(_startDate),
+        endDate: _isAllTime ? null : _formatApiDate(_endDate),
+      );
+
+      final results = await Future.wait([studentsFuture, instFuture]);
+      final res = results[0];
+      final instRes = results[1];
+
+      if (!mounted) return;
+
+      if (res['success'] == true) {
+        setState(() {
+          _students = (res['students'] as List<dynamic>?) ?? [];
+          _institutionVisits = (instRes['visits'] as List<dynamic>?) ?? [];
+          _loading = false;
+        });
+      } else {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(res['error'] ?? 'Failed to load report data')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading report: $e')),
+      );
+    }
+  }
+
+  Future<void> _pickDate(bool isStart) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: isStart ? _startDate : _endDate,
+      firstDate: DateTime(2023, 1, 1),
+      lastDate: DateTime(2030, 12, 31),
+    );
+    if (picked != null) {
+      setState(() {
+        if (isStart) {
+          _startDate = picked;
+          if (_endDate.isBefore(_startDate)) _endDate = _startDate;
+        } else {
+          _endDate = picked;
+        }
+      });
+      _fetchReportData();
+    }
+  }
+
+  String get _reportTypeDisplay {
+    if (_reportType == 'new_students') return 'New Students Only';
+    if (_reportType == 'visits') return 'Village Visits Only';
+    if (_reportType == 'star_leads') return 'Star Leads Only';
+    return 'All (New Students + Village Visits)';
+  }
+
+  String get _dateRangeDisplay {
+    if (_isAllTime) return 'All Time';
+    if (_startDate.year == _endDate.year &&
+        _startDate.month == _endDate.month &&
+        _startDate.day == _endDate.day) {
+      return _formatDisplayDate(_startDate);
+    }
+    return '${_formatDisplayDate(_startDate)} to ${_formatDisplayDate(_endDate)}';
+  }
+
+  // Generate PDF Document Bytes exactly matching web app (A4 Landscape, teal headers, summary)
+  Future<Uint8List> _buildPdfDoc() async {
+    final pdf = pw.Document();
+
+    // Load active college name from SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    final storedCollege = prefs.getString('employee_college');
+    final headerCollege = (storedCollege != null && storedCollege.trim().isNotEmpty)
+        ? storedCollege.trim()
+        : _collegeName.trim();
+
+    // Preload hierarchy mappings for complete addresses
+    final configParentMap = await ApiService.getConfigParentMap();
+
+    // Headers & Column Widths
+    final List<String> tableHeaders = [];
+    final Map<int, pw.TableColumnWidth> columnWidths = {};
+    int colIdx = 0;
+
+    for (final col in _availableColumns) {
+      final id = col['id']!;
+      if (_selectedColumns.contains(id)) {
+        tableHeaders.add(col['label']!);
+        if (id == 'sno') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(28);
+        } else if (id == 'studentName') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(2.2);
+        } else if (id == 'fatherName') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(2.0);
+        } else if (id == 'occupation') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(1.4);
+        } else if (id == 'address') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(3.0);
+        } else if (id == 'gps') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(64);
+        } else if (id == 'phone') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(64);
+        } else if (id == 'whatsapp') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(64);
+        } else if (id == 'group') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(1.3);
+        } else if (id == 'visitNumber') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(36);
+        } else if (id == 'schoolName') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(2.7);
+        } else if (id == 'doorstep') {
+          columnWidths[colIdx] = const pw.FixedColumnWidth(48);
+        } else if (id == 'remarks') {
+          columnWidths[colIdx] = const pw.FlexColumnWidth(4.0);
+        }
+        colIdx++;
+      }
+    }
+
+    // Collect report entries
+    final List<_ReportPdfEntry> allEntries = [];
+    final Set<String> seenStudentIds = {};
+    final bool hasDateRange = !_isAllTime;
+    final String startDateStr = _formatApiDate(_startDate);
+    final String endDateStr = _formatApiDate(_endDate);
+
+    for (final s in _students) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        continue;
+      }
+
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+
+      // Sort all visits chronologically
+      final sortedVisits = List<dynamic>.from(rawVisits)..sort((a, b) {
+        final aKey = _getDateKey(a['visitDate']);
+        final bKey = _getDateKey(b['visitDate']);
+        return aKey.compareTo(bKey);
+      });
+
+      // Assign true lifetime sequence number: 1, 2, 3, 4...
+      final visitsWithSeq = <Map<String, dynamic>>[];
+      for (int idx = 0; idx < sortedVisits.length; idx++) {
+        final v = Map<String, dynamic>.from(sortedVisits[idx] as Map);
+        v['_seqNo'] = '${idx + 1}';
+        visitsWithSeq.add(v);
+      }
+
+      // Filter visits to selected date range
+      final matchingVisits = visitsWithSeq.where((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        if (vKey.isEmpty) return false;
+        return vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      }).toList();
+
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final bool isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty &&
+           createdDateKey.compareTo(startDateStr) >= 0 &&
+           createdDateKey.compareTo(endDateStr) <= 0);
+
+      if (_reportType == 'visits') {
+        for (final v in matchingVisits) {
+          final dateKey = _getDateKey(v['visitDate']);
+          final dateInfo = _formatEntryDate(dateKey);
+          final rem = (v['remarks']?.toString().trim() ?? '').isNotEmpty
+              ? v['remarks'].toString().trim()
+              : (s['remarks']?.toString().trim() ?? '');
+
+          allEntries.add(_ReportPdfEntry(
+            dateKey: dateKey,
+            dateFormatted: dateInfo['dateFormatted']!,
+            dayName: dateInfo['dayName']!,
+            student: s,
+            visit: v,
+            visitNumber: v['_seqNo'] ?? '1',
+            remarks: rem,
+            entryType: 'visit',
+          ));
+        }
+      } else if (_reportType == 'new_students') {
+        if (isCreatedInRange) {
+          final dateKey = createdDateKey;
+          final dateInfo = _formatEntryDate(dateKey);
+          allEntries.add(_ReportPdfEntry(
+            dateKey: dateKey,
+            dateFormatted: dateInfo['dateFormatted']!,
+            dayName: dateInfo['dayName']!,
+            student: s,
+            visit: null,
+            visitNumber: '-',
+            remarks: (s['remarks']?.toString().trim() ?? '').isNotEmpty
+                ? s['remarks'].toString().trim()
+                : 'New Student Added',
+            entryType: 'new_student',
+          ));
+        }
+      } else if (_reportType == 'star_leads') {
+        // Unique Star Lead Students only - strictly deduplicated, no duplicate rows
+        final sId = (s['id']?.toString() ?? '').isNotEmpty
+            ? s['id'].toString()
+            : ((s['phone']?.toString() ?? '').isNotEmpty ? s['phone'].toString() : (s['studentName']?.toString() ?? ''));
+        if (sId.isNotEmpty && seenStudentIds.contains(sId)) {
+          continue;
+        }
+
+        final bool studentActive = !hasDateRange || matchingVisits.isNotEmpty || isCreatedInRange;
+        if (studentActive) {
+          if (sId.isNotEmpty) seenStudentIds.add(sId);
+          final visitCount = matchingVisits.length;
+          final visitNumberStr = visitCount > 0 ? '$visitCount ${visitCount == 1 ? "Visit" : "Visits"}' : '-';
+
+          String rem = (s['remarks']?.toString().trim() ?? '');
+          if (matchingVisits.isNotEmpty) {
+            final lastV = matchingVisits.last;
+            final vRem = (lastV['remarks']?.toString().trim() ?? '');
+            if (vRem.isNotEmpty) {
+              rem = rem.isNotEmpty ? '$rem | Latest: $vRem' : vRem;
+            }
+          }
+
+          allEntries.add(_ReportPdfEntry(
+            dateKey: 'star_leads',
+            dateFormatted: '',
+            dayName: '',
+            student: s,
+            visit: null,
+            visitNumber: visitNumberStr,
+            remarks: rem.isNotEmpty ? rem : 'Star Lead Registered',
+            entryType: 'star_lead',
+          ));
+        }
+      } else {
+        // 'all': Both new students and visits
+        for (final v in matchingVisits) {
+          final dateKey = _getDateKey(v['visitDate']);
+          final dateInfo = _formatEntryDate(dateKey);
+          final rem = (v['remarks']?.toString().trim() ?? '').isNotEmpty
+              ? 'Visit ${v['_seqNo']}: ${v['remarks'].toString().trim()}'
+              : (s['remarks']?.toString().trim() ?? '');
+
+          allEntries.add(_ReportPdfEntry(
+            dateKey: dateKey,
+            dateFormatted: dateInfo['dateFormatted']!,
+            dayName: dateInfo['dayName']!,
+            student: s,
+            visit: v,
+            visitNumber: v['_seqNo'] ?? '1',
+            remarks: rem,
+            entryType: 'visit',
+          ));
+        }
+
+        // Add newly registered student in date range if not already captured by a visit on that exact creation date
+        final hasVisitOnCreatedDate = matchingVisits.any((v) => _getDateKey(v['visitDate']) == createdDateKey);
+        if (isCreatedInRange && !hasVisitOnCreatedDate) {
+          final dateKey = createdDateKey;
+          final dateInfo = _formatEntryDate(dateKey);
+          allEntries.add(_ReportPdfEntry(
+            dateKey: dateKey,
+            dateFormatted: dateInfo['dateFormatted']!,
+            dayName: dateInfo['dayName']!,
+            student: s,
+            visit: null,
+            visitNumber: '-',
+            remarks: (s['remarks']?.toString().trim() ?? '').isNotEmpty
+                ? 'New Lead: ${s['remarks'].toString().trim()}'
+                : 'New Student Added',
+            entryType: 'new_student',
+          ));
+        }
+      }
+    }
+
+    // Helper to format a table row
+    List<String> buildTableRow(int index, dynamic s, String visitNumber, String remarks) {
+      final row = <String>[];
+
+      // Full Hierarchical Address (Village, Mandal, District, Landmark)
+      final villageId = s['village']?.toString() ?? '';
+      final villageName = ApiService.resolveConfig(villageId);
+
+      String mandalId = s['mandal']?.toString() ?? '';
+      if (mandalId.isEmpty && villageId.isNotEmpty) {
+        mandalId = configParentMap[villageId] ?? '';
+      }
+      final mandalName = ApiService.resolveConfig(mandalId);
+
+      String districtId = s['district']?.toString() ?? '';
+      if (districtId.isEmpty && mandalId.isNotEmpty) {
+        districtId = configParentMap[mandalId] ?? '';
+      }
+      final districtName = ApiService.resolveConfig(districtId);
+
+      final addressParts = <String>[];
+      if (villageName.isNotEmpty) addressParts.add(villageName);
+      if (mandalName.isNotEmpty && mandalName.toLowerCase() != villageName.toLowerCase()) {
+        addressParts.add(mandalName.toLowerCase().contains('mandal') ? mandalName : '$mandalName Mdl');
+      }
+      if (districtName.isNotEmpty && districtName.toLowerCase() != mandalName.toLowerCase()) {
+        addressParts.add(districtName.toLowerCase().contains('dist') ? districtName : '$districtName Dt.');
+      }
+
+      String finalAddress = addressParts.join(', ');
+      final rawAddress = s['address']?.toString().trim() ?? '';
+      final cleanLandmark = LocationService.getCleanLandmark(rawAddress);
+      if (cleanLandmark.isNotEmpty) {
+        finalAddress = finalAddress.isNotEmpty ? '$finalAddress\nLandmark: $cleanLandmark' : cleanLandmark;
+      }
+      if (finalAddress.isEmpty) finalAddress = '-';
+
+      // Group resolution (avoid blank empty cells)
+      final rawGroup = s['group']?.toString().trim() ?? '';
+      final resolvedGroup = ApiService.resolveConfig(rawGroup);
+      final groupDisplay = resolvedGroup.isNotEmpty
+          ? resolvedGroup
+          : (rawGroup.isNotEmpty ? rawGroup : '-');
+
+      // School Name
+      final sc = ApiService.resolveConfig(s['schoolName']?.toString() ?? '');
+      final schoolDisplay = sc.isNotEmpty ? sc : (s['schoolName']?.toString() ?? '-');
+
+      // Detailed Remarks
+      String extraRemarks = remarks.trim();
+      if (s['marks'] != null && s['marks'].toString().trim().isNotEmpty) {
+        final m = s['marks'].toString().trim();
+        extraRemarks += extraRemarks.isNotEmpty ? ' | Marks: $m' : 'Marks: $m';
+      }
+      if (s['studyInterestedAt'] != null && s['studyInterestedAt'].toString().isNotEmpty) {
+        final intAt = ApiService.resolveConfig(s['studyInterestedAt'].toString());
+        extraRemarks += extraRemarks.isNotEmpty ? ' | Int: $intAt' : 'Int: $intAt';
+      }
+      if (s['ableToBearFee'] != null && s['ableToBearFee'].toString().isNotEmpty) {
+        final fee = ApiService.resolveConfig(s['ableToBearFee'].toString());
+        extraRemarks += extraRemarks.isNotEmpty ? ' | Fee: $fee' : 'Fee: $fee';
+      }
+      if (s['leadStatus'] != null && s['leadStatus'].toString().isNotEmpty) {
+        extraRemarks += extraRemarks.isNotEmpty ? ' | Status: ${s['leadStatus']}' : 'Status: ${s['leadStatus']}';
+      }
+
+      for (final col in _availableColumns) {
+        final id = col['id']!;
+        if (_selectedColumns.contains(id)) {
+          if (id == 'sno') {
+            row.add('${index + 1}');
+          } else if (id == 'studentName') {
+            row.add(s['studentName']?.toString() ?? '-');
+          } else if (id == 'fatherName') {
+            row.add(s['fatherName']?.toString() ?? '-');
+          } else if (id == 'occupation') {
+            row.add(s['occupation']?.toString() ?? '-');
+          } else if (id == 'address') {
+            row.add(finalAddress);
+          } else if (id == 'gps') {
+            final coords = LocationService.extractGps(rawAddress);
+            if (coords != null) {
+              row.add('${coords['lat']!.toStringAsFixed(4)},\n${coords['lng']!.toStringAsFixed(4)}');
+            } else {
+              row.add('-');
+            }
+          } else if (id == 'phone') {
+            row.add(s['phone']?.toString() ?? '-');
+          } else if (id == 'whatsapp') {
+            row.add(s['whatsapp']?.toString() ?? '-');
+          } else if (id == 'group') {
+            row.add(groupDisplay);
+          } else if (id == 'visitNumber') {
+            row.add(visitNumber);
+          } else if (id == 'schoolName') {
+            row.add(schoolDisplay);
+          } else if (id == 'doorstep') {
+            row.add(s['doorstepCompleted'] == true ? 'Yes' : 'No');
+          } else if (id == 'remarks') {
+            row.add(extraRemarks.isNotEmpty ? extraRemarks : '-');
+          }
+        }
+      }
+      return row;
+    }
+
+    // Pre-build rows for Star Leads (flat continuous list without date groups)
+    final List<List<String>> starLeadTableData = [];
+    if (_reportType == 'star_leads') {
+      for (int i = 0; i < allEntries.length; i++) {
+        final entry = allEntries[i];
+        starLeadTableData.add(buildTableRow(i, entry.student, entry.visitNumber, entry.remarks));
+      }
+    }
+
+    // Group by dateKey for date-based reports
+    final Map<String, List<_ReportPdfEntry>> dateGroups = {};
+    if (_reportType != 'star_leads') {
+      for (final entry in allEntries) {
+        dateGroups.putIfAbsent(entry.dateKey, () => []).add(entry);
+      }
+    }
+
+    final Map<String, List<Map<String, dynamic>>> instVisitsByDate = {};
+    if (_reportType != 'star_leads' && _reportType != 'new_students') {
+      for (final iv in _institutionVisits) {
+        if (iv is Map<String, dynamic>) {
+          final dKey = _getDateKey(iv['visitDate']);
+          if (dKey.isEmpty) continue;
+          if (hasDateRange && (dKey.compareTo(startDateStr) < 0 || dKey.compareTo(endDateStr) > 0)) {
+            continue;
+          }
+          instVisitsByDate.putIfAbsent(dKey, () => []).add(iv);
+          dateGroups.putIfAbsent(dKey, () => []);
+        }
+      }
+    }
+
+    final sortedDateKeys = dateGroups.keys.toList()..sort();
+
+    // Pre-build table rows for each date
+    final Map<String, List<List<String>>> dayTables = {};
+    for (final dKey in sortedDateKeys) {
+      final dayItems = dateGroups[dKey]!;
+      final dayTableData = <List<String>>[];
+
+      for (int i = 0; i < dayItems.length; i++) {
+        final entry = dayItems[i];
+        dayTableData.add(buildTableRow(i, entry.student, entry.visitNumber, entry.remarks));
+      }
+      dayTables[dKey] = dayTableData;
+    }
+
+    // Report Title
+    String reportTitle = 'DAY REPORT - ALL (NEW & VISITS)';
+    if (_reportType == 'new_students') {
+      reportTitle = 'DAY REPORT - NEW ADMISSION STUDENTS';
+    } else if (_reportType == 'visits') {
+      reportTitle = 'DAY REPORT - VILLAGE VISITS';
+    } else if (_reportType == 'star_leads') {
+      reportTitle = 'STAR LEADS LIST REPORT';
+    }
+
+    // Filter labels
+    final filterParts = <String>[];
+    if (_reportType == 'new_students') {
+      filterParts.add('Type: New Students Only');
+    } else if (_reportType == 'visits') {
+      filterParts.add('Type: Village Visits Only');
+    } else if (_reportType == 'star_leads') {
+      filterParts.add('Type: Star Leads List (Unique Students)');
+    } else {
+      filterParts.add('Type: All (New & Visits)');
+    }
+
+    if (_filterMandal.isNotEmpty) {
+      filterParts.add('Mandal: ${ApiService.resolveConfig(_filterMandal)}');
+    }
+    if (_filterVillage.isNotEmpty) {
+      filterParts.add('Village: ${ApiService.resolveConfig(_filterVillage)}');
+    }
+    if (_filterSchool.isNotEmpty) {
+      filterParts.add('School: ${ApiService.resolveConfig(_filterSchool)}');
+    }
+
+    // Group counts summary with clean labels (never empty group keys)
+    final groupCounts = <String, int>{};
+    for (final entry in allEntries) {
+      final s = entry.student;
+      final rawG = s['group']?.toString().trim() ?? '';
+      final g = ApiService.resolveConfig(rawG);
+      final groupName = g.isNotEmpty ? g : (rawG.isNotEmpty ? rawG : 'Not Specified');
+      groupCounts[groupName] = (groupCounts[groupName] ?? 0) + 1;
+    }
+    final groupCountsSummary = groupCounts.entries.map((e) => '${e.key}: ${e.value}').join(' | ');
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        margin: const pw.EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        header: (pw.Context context) {
+          if (context.pageNumber == 1) {
+            return pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Center(
+                  child: pw.Column(
+                    children: [
+                      if (headerCollege.isNotEmpty) ...[
+                        pw.Text(
+                          headerCollege.toUpperCase(),
+                          style: pw.TextStyle(
+                            fontSize: 16,
+                            fontWeight: pw.FontWeight.bold,
+                            color: PdfColor.fromHex('#0F2B47'),
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                        pw.SizedBox(height: 3),
+                      ],
+                      pw.Text(
+                        reportTitle,
+                        style: pw.TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: PdfColor.fromHex('#0F766E'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                pw.SizedBox(height: 6),
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Text(
+                      'Employee Name: $_employeeName',
+                      style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                    ),
+                    pw.Text(
+                      'Date Range: $_dateRangeDisplay',
+                      style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                    ),
+                  ],
+                ),
+                if (filterParts.isNotEmpty)
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.only(top: 2),
+                    child: pw.Text(
+                      'Filters: ${filterParts.join(' | ')}',
+                      style: pw.TextStyle(fontSize: 8.5, color: PdfColor.fromHex('#64748B')),
+                    ),
+                  ),
+                pw.SizedBox(height: 6),
+              ],
+            );
+          } else {
+            // Subsequent pages: Compact running header without repeating Date Range or Filters
+            return pw.Container(
+              margin: const pw.EdgeInsets.only(bottom: 6),
+              padding: const pw.EdgeInsets.only(bottom: 4),
+              decoration: pw.BoxDecoration(
+                border: pw.Border(
+                  bottom: pw.BorderSide(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                ),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Text(
+                    reportTitle,
+                    style: pw.TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: pw.FontWeight.bold,
+                      color: PdfColor.fromHex('#0F766E'),
+                    ),
+                  ),
+                  pw.Text(
+                    'Employee: $_employeeName',
+                    style: pw.TextStyle(
+                      fontSize: 8.0,
+                      color: PdfColor.fromHex('#64748B'),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
+        },
+        footer: (pw.Context context) {
+          return pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                'Page ${context.pageNumber} of ${context.pagesCount}',
+                style: const pw.TextStyle(fontSize: 8.0, color: PdfColors.grey),
+              ),
+              pw.Text(
+                'PRO Day Report',
+                style: const pw.TextStyle(fontSize: 8.0, color: PdfColors.grey),
+              ),
+            ],
+          );
+        },
+        build: (pw.Context context) {
+          final contentWidgets = <pw.Widget>[];
+
+          if (_reportType == 'star_leads') {
+            if (allEntries.isEmpty) {
+              contentWidgets.add(
+                pw.Center(
+                  child: pw.Padding(
+                    padding: const pw.EdgeInsets.all(30),
+                    child: pw.Text('No star leads found in the selected date range.', style: const pw.TextStyle(fontSize: 12)),
+                  ),
+                ),
+              );
+            } else {
+              contentWidgets.add(
+                pw.TableHelper.fromTextArray(
+                  headers: tableHeaders,
+                  data: starLeadTableData,
+                  columnWidths: columnWidths,
+                  border: pw.TableBorder.all(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                  headerStyle: pw.TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                  headerDecoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#0F766E'),
+                  ),
+                  cellStyle: const pw.TextStyle(fontSize: 8.0),
+                  cellPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3.5),
+                  headerPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4.5),
+                  cellAlignment: pw.Alignment.centerLeft,
+                  headerAlignment: pw.Alignment.centerLeft,
+                ),
+              );
+            }
+
+            contentWidgets.add(pw.SizedBox(height: 8));
+
+            // Summary for Star Leads:
+            contentWidgets.add(pw.NewPage(freeSpace: 65));
+            contentWidgets.add(pw.SizedBox(height: 6));
+            contentWidgets.add(
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'Summary:',
+                        style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                      ),
+                      pw.SizedBox(height: 3),
+                      pw.Text(
+                        'Total Unique Star Leads: ${allEntries.length}',
+                        style: const pw.TextStyle(fontSize: 8.5),
+                      ),
+                      if (groupCountsSummary.isNotEmpty) ...[
+                        pw.SizedBox(height: 2),
+                        pw.Text(
+                          groupCountsSummary,
+                          style: const pw.TextStyle(fontSize: 8.0),
+                        ),
+                      ],
+                    ],
+                  ),
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.only(top: 8),
+                    child: pw.Text(
+                      'Employee Signature: _________________',
+                      style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            );
+
+            return contentWidgets;
+          }
+
+          if (sortedDateKeys.isEmpty) {
+            contentWidgets.add(
+              pw.Center(
+                child: pw.Padding(
+                  padding: const pw.EdgeInsets.all(30),
+                  child: pw.Text('No records found in the selected date range.', style: const pw.TextStyle(fontSize: 12)),
+                ),
+              ),
+            );
+          }
+
+          for (int dIndex = 0; dIndex < sortedDateKeys.length; dIndex++) {
+            final dKey = sortedDateKeys[dIndex];
+            final dayItems = dateGroups[dKey] ?? [];
+            final dayInstVisits = instVisitsByDate[dKey] ?? [];
+
+            String dFormatted;
+            String dName;
+            if (dayItems.isNotEmpty) {
+              dFormatted = dayItems.first.dateFormatted;
+              dName = dayItems.first.dayName;
+            } else {
+              final dateInfo = _formatEntryDate(dKey);
+              dFormatted = dateInfo['dateFormatted']!;
+              dName = dateInfo['dayName']!;
+            }
+
+            String itemLabel = '';
+            if (_reportType == 'new_students') {
+              itemLabel = '${dayItems.length} ${dayItems.length == 1 ? "New Student" : "New Students"}';
+            } else if (_reportType == 'visits') {
+              itemLabel = '${dayItems.length} ${dayItems.length == 1 ? "Visit" : "Visits"}';
+            } else if (_reportType == 'star_leads') {
+              itemLabel = '${dayItems.length} ${dayItems.length == 1 ? "Star Lead" : "Star Leads"}';
+            } else {
+              final visitsCount = dayItems.where((i) => i.entryType == 'visit').length;
+              final newCount = dayItems.where((i) => i.entryType == 'new_student').length;
+              if (visitsCount > 0 && newCount > 0) {
+                itemLabel = '$visitsCount ${visitsCount == 1 ? "Visit" : "Visits"} + $newCount New';
+              } else if (visitsCount > 0) {
+                itemLabel = '$visitsCount ${visitsCount == 1 ? "Visit" : "Visits"}';
+              } else if (newCount > 0) {
+                itemLabel = '$newCount ${newCount == 1 ? "New Student" : "New Students"}';
+              } else {
+                itemLabel = '${dayItems.length} Visits';
+              }
+            }
+
+            final regularInstVisits = dayInstVisits.where((iv) => iv['type'] != 'OTHER').toList();
+            final otherDuties = dayInstVisits.where((iv) => iv['type'] == 'OTHER').toList();
+
+            String bannerSubtext = itemLabel;
+            if (regularInstVisits.isNotEmpty) {
+              bannerSubtext += '   |   ${regularInstVisits.length} School/Tuition ${regularInstVisits.length == 1 ? "Visit" : "Visits"}';
+            }
+            if (otherDuties.isNotEmpty) {
+              bannerSubtext += '   |   ${otherDuties.length} Official Duty / Work Log';
+            }
+
+            // Smart keep-together: Prevent orphaned Date Banner and table headers at bottom of page.
+            if (dIndex > 0) {
+              final double neededForDay = 52.0 + (dayItems.length * 28.0) + (regularInstVisits.length * 24.0) + (otherDuties.length * 36.0);
+              final double keepSpace = neededForDay > 240.0 ? 240.0 : neededForDay;
+              contentWidgets.add(pw.NewPage(freeSpace: keepSpace));
+            }
+
+            contentWidgets.add(
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                margin: const pw.EdgeInsets.only(top: 4, bottom: 4),
+                decoration: pw.BoxDecoration(
+                  color: PdfColor.fromHex('#F1F5F9'),
+                  borderRadius: pw.BorderRadius.circular(3),
+                  border: pw.Border.all(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                ),
+                child: pw.Text(
+                  'DATE: $dFormatted ($dName)   |   $bannerSubtext',
+                  style: pw.TextStyle(
+                    fontSize: 9.0,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColor.fromHex('#0F766E'),
+                  ),
+                ),
+              ),
+            );
+
+            // 1. Institution Visits Table (Schools & Tuition Centers)
+            if (regularInstVisits.isNotEmpty) {
+              contentWidgets.add(
+                pw.Padding(
+                  padding: const pw.EdgeInsets.only(top: 3, bottom: 2),
+                  child: pw.Text(
+                    'SCHOOLS & TUITION CENTERS VISITED (${regularInstVisits.length}):',
+                    style: pw.TextStyle(
+                      fontSize: 8.0,
+                      fontWeight: pw.FontWeight.bold,
+                      color: PdfColor.fromHex('#B45309'),
+                    ),
+                  ),
+                ),
+              );
+
+              final instRows = <List<String>>[];
+              for (int ivIdx = 0; ivIdx < regularInstVisits.length; ivIdx++) {
+                final iv = regularInstVisits[ivIdx];
+                final metCount = (iv['studentsMetCount'] as num?)?.toInt() ?? 0;
+                instRows.add([
+                  '${ivIdx + 1}',
+                  iv['type']?.toString() ?? 'SCHOOL',
+                  iv['name']?.toString() ?? '-',
+                  iv['village']?.toString() ?? '-',
+                  iv['contactPerson']?.toString() ?? '-',
+                  iv['phone']?.toString() ?? '-',
+                  metCount > 0 ? '$metCount' : '-',
+                  iv['remarks']?.toString() ?? '-',
+                ]);
+              }
+
+              contentWidgets.add(
+                pw.TableHelper.fromTextArray(
+                  headers: const ['S.No', 'Type', 'Institution Name', 'Location', 'Incharge / HM', 'Phone', 'Met', 'Remarks'],
+                  data: instRows,
+                  border: pw.TableBorder.all(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                  headerStyle: pw.TextStyle(
+                    fontSize: 8.0,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                  headerDecoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#B45309'),
+                  ),
+                  cellStyle: const pw.TextStyle(fontSize: 7.5),
+                  cellPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3.0),
+                  headerPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4.0),
+                ),
+              );
+              contentWidgets.add(pw.SizedBox(height: 5));
+            }
+
+            // 2. Official Duties & Special Work Log Table (Phone Follow-up / Rain / Office / Meetings)
+            if (otherDuties.isNotEmpty) {
+              contentWidgets.add(
+                pw.Padding(
+                  padding: const pw.EdgeInsets.only(top: 3, bottom: 2),
+                  child: pw.Text(
+                    'OFFICIAL DUTIES & WORK LOG (${otherDuties.length}):',
+                    style: pw.TextStyle(
+                      fontSize: 8.0,
+                      fontWeight: pw.FontWeight.bold,
+                      color: PdfColor.fromHex('#7E22CE'),
+                    ),
+                  ),
+                ),
+              );
+
+              final dutyRows = <List<String>>[];
+              for (int dIdx = 0; dIdx < otherDuties.length; dIdx++) {
+                final duty = otherDuties[dIdx];
+                final reachedCount = (duty['studentsMetCount'] as num?)?.toInt() ?? 0;
+                dutyRows.add([
+                  '${dIdx + 1}',
+                  duty['name']?.toString() ?? '-',
+                  duty['contactPerson']?.toString() ?? '-',
+                  duty['village']?.toString() ?? '-',
+                  duty['phone']?.toString() ?? '-',
+                  reachedCount > 0 ? '$reachedCount' : '-',
+                  duty['remarks']?.toString() ?? '-',
+                ]);
+              }
+
+              contentWidgets.add(
+                pw.TableHelper.fromTextArray(
+                  headers: const ['S.No', 'Duty / Work Task', 'Category', 'Location', 'Phone', 'Reached', 'Detailed Work Description'],
+                  data: dutyRows,
+                  border: pw.TableBorder.all(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                  headerStyle: pw.TextStyle(
+                    fontSize: 8.0,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                  headerDecoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#7E22CE'),
+                  ),
+                  cellStyle: const pw.TextStyle(fontSize: 7.5),
+                  cellPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3.0),
+                  headerPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4.0),
+                ),
+              );
+              contentWidgets.add(pw.SizedBox(height: 5));
+            }
+
+            // 3. Student Visits Table
+            final dayTableData = dayTables[dKey] ?? [];
+            if (dayTableData.isNotEmpty) {
+              if (regularInstVisits.isNotEmpty || otherDuties.isNotEmpty) {
+                contentWidgets.add(
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.only(top: 2, bottom: 2),
+                    child: pw.Text(
+                      'STUDENTS DOORSTEP VISITS (${dayTableData.length}):',
+                      style: pw.TextStyle(
+                        fontSize: 8.0,
+                        fontWeight: pw.FontWeight.bold,
+                        color: PdfColor.fromHex('#0F766E'),
+                      ),
+                    ),
+                  ),
+                );
+              }
+
+              contentWidgets.add(
+                pw.TableHelper.fromTextArray(
+                  headers: tableHeaders,
+                  data: dayTableData,
+                  columnWidths: columnWidths,
+                  border: pw.TableBorder.all(color: PdfColor.fromHex('#CBD5E1'), width: 0.5),
+                  headerStyle: pw.TextStyle(
+                    fontSize: 8.5,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                  headerDecoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#0F766E'),
+                  ),
+                  cellStyle: const pw.TextStyle(fontSize: 8.0),
+                  cellPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3.5),
+                  headerPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4.5),
+                  cellAlignment: pw.Alignment.centerLeft,
+                  headerAlignment: pw.Alignment.centerLeft,
+                ),
+              );
+            }
+
+            contentWidgets.add(pw.SizedBox(height: 8));
+          }
+
+          final uniqueStudentsCount = allEntries.map((e) => e.student['id']?.toString() ?? '').toSet().length;
+
+          // Prevent summary and signature from being orphaned or cut off at bottom of page
+          contentWidgets.add(pw.NewPage(freeSpace: 65));
+          contentWidgets.add(pw.SizedBox(height: 6));
+          contentWidgets.add(
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text(
+                      'Summary:',
+                      style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                    ),
+                    pw.SizedBox(height: 3),
+                    pw.Text(
+                      'Total Visits/Entries: ${allEntries.length}   |   Unique Students: $uniqueStudentsCount   |   Active Dates: ${sortedDateKeys.length}',
+                      style: const pw.TextStyle(fontSize: 8.5),
+                    ),
+                    if (groupCountsSummary.isNotEmpty) ...[
+                      pw.SizedBox(height: 2),
+                      pw.Text(
+                        groupCountsSummary,
+                        style: const pw.TextStyle(fontSize: 8.0),
+                      ),
+                    ],
+                  ],
+                ),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.only(top: 8),
+                  child: pw.Text(
+                    'Employee Signature: _________________',
+                    style: pw.TextStyle(fontSize: 9.5, fontWeight: pw.FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          );
+
+          return contentWidgets;
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  Future<void> _handleDownloadPdf() async {
+    final bool hasDateRange = !_isAllTime;
+    final String startDateStr = _formatApiDate(_startDate);
+    final String endDateStr = _formatApiDate(_endDate);
+
+    final hasMatchingStudents = _students.any((s) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        return false;
+      }
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final hasMatchingVisit = rawVisits.any((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      });
+
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty && createdDateKey.compareTo(startDateStr) >= 0 && createdDateKey.compareTo(endDateStr) <= 0);
+
+      if (_reportType == 'visits') {
+        return hasMatchingVisit;
+      } else if (_reportType == 'new_students') {
+        return isCreatedInRange;
+      } else if (_reportType == 'star_leads') {
+        return !hasDateRange || hasMatchingVisit || isCreatedInRange;
+      } else {
+        return hasMatchingVisit || isCreatedInRange;
+      }
+    });
+
+    final hasMatchingDuties = (_reportType == 'star_leads' || _reportType == 'new_students')
+        ? false
+        : _institutionVisits.any((iv) {
+            if (iv is! Map<String, dynamic>) return false;
+            if (!hasDateRange) return true;
+            final dKey = _getDateKey(iv['visitDate']);
+            return dKey.isNotEmpty && dKey.compareTo(startDateStr) >= 0 && dKey.compareTo(endDateStr) <= 0;
+          });
+
+    if (!hasMatchingStudents && !hasMatchingDuties) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No records or duties found in the selected date range.')),
+      );
+      return;
+    }
+    if (hasMatchingStudents && _selectedColumns.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select at least one column to download.')),
+      );
+      return;
+    }
+
+    setState(() => _generatingPdf = true);
+
+    try {
+      final pdfBytes = await _buildPdfDoc();
+      final safeName = _employeeName.trim().isNotEmpty
+          ? _employeeName.trim().replaceAll(RegExp(r'\s+'), '_')
+          : 'Employee';
+      final filename = _reportType == 'star_leads'
+          ? 'Star_Leads_Report_$safeName.pdf'
+          : 'Report_$safeName.pdf';
+
+      await PdfDownloader.download(pdfBytes, filename);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF059669),
+            content: Text('PDF Downloaded: $filename'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: const Color(0xFFDC2626), content: Text('Error generating PDF: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
+  Future<void> _sharePdfToWhatsApp(String summary) async {
+    setState(() => _generatingPdf = true);
+    try {
+      final pdfBytes = await _buildPdfDoc();
+      final safeName = _employeeName.trim().isNotEmpty
+          ? _employeeName.trim().replaceAll(RegExp(r'\s+'), '_')
+          : 'Employee';
+      final filename = _reportType == 'star_leads'
+          ? 'Star_Leads_Report_$safeName.pdf'
+          : 'Report_$safeName.pdf';
+
+      if (!kIsWeb) {
+        // On Mobile (Android/iOS): share PDF directly via native share sheet (WhatsApp)
+        await Printing.sharePdf(
+          bytes: pdfBytes,
+          filename: filename,
+          subject: 'Day Report - $_employeeName',
+          body: summary,
+        );
+      } else {
+        // On Web: download the PDF and open WhatsApp Web so user can attach the document
+        await PdfDownloader.download(pdfBytes, filename);
+        final webUrl = Uri.parse('https://web.whatsapp.com');
+        await launchUrl(webUrl, mode: LaunchMode.externalApplication);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              backgroundColor: Color(0xFF059669),
+              content: Text('PDF downloaded! Drag & drop or attach the file in WhatsApp Web.'),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: const Color(0xFFDC2626), content: Text('Failed to share PDF: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _generatingPdf = false);
+    }
+  }
+
+  Future<void> _shareSummaryToWhatsApp(String summary) async {
+    final whatsappUrl = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(summary)}');
+    final webUrl = Uri.parse('https://api.whatsapp.com/send?text=${Uri.encodeComponent(summary)}');
+    try {
+      if (!kIsWeb && await canLaunchUrl(whatsappUrl)) {
+        await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+      } else {
+        await launchUrl(webUrl, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {
+      try {
+        await launchUrl(webUrl, mode: LaunchMode.externalApplication);
+      } catch (e2) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not open WhatsApp: $e2')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _handleShareReport() async {
+    final bool hasDateRange = !_isAllTime;
+    final String startDateStr = _formatApiDate(_startDate);
+    final String endDateStr = _formatApiDate(_endDate);
+
+    final rawStudents = _students.where((s) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        return false;
+      }
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final hasMatchingVisit = rawVisits.any((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      });
+
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty && createdDateKey.compareTo(startDateStr) >= 0 && createdDateKey.compareTo(endDateStr) <= 0);
+
+      if (_reportType == 'visits') {
+        return hasMatchingVisit;
+      } else if (_reportType == 'new_students') {
+        return isCreatedInRange;
+      } else if (_reportType == 'star_leads') {
+        return !hasDateRange || hasMatchingVisit || isCreatedInRange;
+      } else {
+        return hasMatchingVisit || isCreatedInRange;
+      }
+    }).toList();
+
+    // Deduplicate Star Leads so zero duplicate students are counted
+    List<dynamic> relevantStudents = rawStudents;
+    if (_reportType == 'star_leads') {
+      final seenShareIds = <String>{};
+      relevantStudents = rawStudents.where((s) {
+        final sId = (s['id']?.toString() ?? '').isNotEmpty
+            ? s['id'].toString()
+            : ((s['phone']?.toString() ?? '').isNotEmpty ? s['phone'].toString() : (s['studentName']?.toString() ?? ''));
+        if (sId.isNotEmpty && seenShareIds.contains(sId)) return false;
+        if (sId.isNotEmpty) seenShareIds.add(sId);
+        return true;
+      }).toList();
+    }
+
+    final relevantInstVisits = (_reportType == 'star_leads' || _reportType == 'new_students')
+        ? <dynamic>[]
+        : _institutionVisits.where((iv) {
+            if (iv is! Map<String, dynamic>) return false;
+            if (!hasDateRange) return true;
+            final dKey = _getDateKey(iv['visitDate']);
+            return dKey.isNotEmpty && dKey.compareTo(startDateStr) >= 0 && dKey.compareTo(endDateStr) <= 0;
+          }).toList();
+
+    if (relevantStudents.isEmpty && relevantInstVisits.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No records or duties found to share in the selected date range.')),
+      );
+      return;
+    }
+
+    final int doorstepDone = relevantStudents.where((s) => s['doorstepCompleted'] == true).length;
+    final int pending = relevantStudents.length - doorstepDone;
+
+    final collegeLine = _collegeName.isNotEmpty ? '🏫 *$_collegeName*\n' : '';
+    String summary;
+
+    if (relevantStudents.isEmpty && relevantInstVisits.isNotEmpty) {
+      final otherDutiesCount = relevantInstVisits.where((iv) => iv['type'] == 'OTHER').length;
+      final instCount = relevantInstVisits.length - otherDutiesCount;
+      summary = '$collegeLine'
+          '💼 *PRO DAY WORK & DUTY REPORT*\n'
+          '👤 *Employee:* $_employeeName\n'
+          '📅 *Date Range:* $_dateRangeDisplay\n'
+          '━━━━━━━━━━━━━━━━━━━━\n'
+          '📝 *Official Duties Logged:* $otherDutiesCount\n'
+          '🏛️ *School/Tuition Visits:* $instCount\n'
+          '🏷 *Category:* $_reportTypeDisplay\n'
+          '━━━━━━━━━━━━━━━━━━━━';
+    } else if (_reportType == 'star_leads') {
+      final groupCounts = <String, int>{};
+      for (final s in relevantStudents) {
+        final rawG = s['group']?.toString().trim() ?? '';
+        final g = ApiService.resolveConfig(rawG);
+        final groupName = g.isNotEmpty ? g : (rawG.isNotEmpty ? rawG : 'Others');
+        groupCounts[groupName] = (groupCounts[groupName] ?? 0) + 1;
+      }
+      final groupSummary = groupCounts.entries.map((e) => '${e.key}: ${e.value}').join(', ');
+
+      summary = '$collegeLine'
+          '⭐ *PRO STAR LEADS REPORT*\n'
+          '👤 *Employee:* $_employeeName\n'
+          '📅 *Date Range:* $_dateRangeDisplay\n'
+          '━━━━━━━━━━━━━━━━━━━━\n'
+          '⭐ *Total Star Leads:* ${relevantStudents.length}\n'
+          '✅ *Doorstep Done:* $doorstepDone\n'
+          '⏳ *Pending Leads:* $pending\n'
+          '🏷 *Category:* Star Leads Only\n'
+          '${groupSummary.isNotEmpty ? "📚 *Groups:* $groupSummary\n" : ""}'
+          '━━━━━━━━━━━━━━━━━━━━';
+    } else {
+      // Group breakdown for the summary
+      final groupCounts = <String, int>{};
+      for (final s in relevantStudents) {
+        final rawG = s['group']?.toString().trim() ?? '';
+        final g = ApiService.resolveConfig(rawG);
+        final groupName = g.isNotEmpty ? g : (rawG.isNotEmpty ? rawG : 'Others');
+        groupCounts[groupName] = (groupCounts[groupName] ?? 0) + 1;
+      }
+      final groupSummary = groupCounts.entries.map((e) => '${e.key}: ${e.value}').join(', ');
+
+      summary = '$collegeLine'
+          '📊 *PRO DAY PROGRESS REPORT*\n'
+          '👤 *Employee:* $_employeeName\n'
+          '📅 *Date Range:* $_dateRangeDisplay\n'
+          '━━━━━━━━━━━━━━━━━━━━\n'
+          '📋 *Total Leads/Visits:* ${relevantStudents.length}\n'
+          '✅ *Doorstep Done:* $doorstepDone\n'
+          '⏳ *Pending Leads:* $pending\n'
+          '🏷 *Category:* $_reportTypeDisplay\n'
+          '${groupSummary.isNotEmpty ? "📚 *Groups:* $groupSummary\n" : ""}'
+          '━━━━━━━━━━━━━━━━━━━━';
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.all(22),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDCFCE7),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.share_rounded, color: Color(0xFF16A34A), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Share to WhatsApp',
+                          style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
+                        ),
+                        Text(
+                          'Choose how you want to share with WhatsApp',
+                          style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF25D366),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  elevation: 2,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                icon: const Icon(Icons.picture_as_pdf_rounded, size: 22),
+                label: const Text('Share PDF via WhatsApp', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _sharePdfToWhatsApp(summary);
+                },
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF0F172A),
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  side: const BorderSide(color: Color(0xFFCBD5E1), width: 1.2),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                icon: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF25D366), size: 20),
+                label: const Text('Send Text Summary on WhatsApp', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _shareSummaryToWhatsApp(summary);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool hasDateRange = !_isAllTime;
+    final String startDateStr = _formatApiDate(_startDate);
+    final String endDateStr = _formatApiDate(_endDate);
+
+    int totalVisitsCount = 0;
+    int newStudentsCount = 0;
+    int starLeadsCount = 0;
+    final Set<String> activeDates = {};
+
+    for (final s in _students) {
+      final isStar = _isStarLead(s);
+      if (_reportType == 'star_leads' && !isStar) {
+        continue;
+      }
+
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final matchingVisits = rawVisits.where((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      }).toList();
+
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final bool isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty &&
+           createdDateKey.compareTo(startDateStr) >= 0 &&
+           createdDateKey.compareTo(endDateStr) <= 0);
+
+      if (_reportType == 'visits') {
+        for (final v in matchingVisits) {
+          totalVisitsCount++;
+          final vKey = _getDateKey(v['visitDate']);
+          if (vKey.isNotEmpty) activeDates.add(vKey);
+        }
+      } else if (_reportType == 'new_students') {
+        if (isCreatedInRange) {
+          newStudentsCount++;
+          if (createdDateKey.isNotEmpty) activeDates.add(createdDateKey);
+        }
+      } else if (_reportType == 'star_leads') {
+        final bool studentActive = !hasDateRange || matchingVisits.isNotEmpty || isCreatedInRange;
+        if (studentActive) {
+          starLeadsCount++;
+        }
+      } else {
+        // 'all': Both new students and visits
+        for (final v in matchingVisits) {
+          totalVisitsCount++;
+          final vKey = _getDateKey(v['visitDate']);
+          if (vKey.isNotEmpty) activeDates.add(vKey);
+        }
+        final hasVisitOnCreatedDate = matchingVisits.any((v) => _getDateKey(v['visitDate']) == createdDateKey);
+        if (isCreatedInRange && !hasVisitOnCreatedDate) {
+          newStudentsCount++;
+          if (createdDateKey.isNotEmpty) activeDates.add(createdDateKey);
+        }
+      }
+    }
+
+    int otherDutiesCount = 0;
+    int regularInstCount = 0;
+    if (_reportType != 'star_leads' && _reportType != 'new_students') {
+      for (final iv in _institutionVisits) {
+        if (iv is Map<String, dynamic>) {
+          final dKey = _getDateKey(iv['visitDate']);
+          if (dKey.isNotEmpty) {
+            if (!hasDateRange || (dKey.compareTo(startDateStr) >= 0 && dKey.compareTo(endDateStr) <= 0)) {
+              activeDates.add(dKey);
+              if (iv['type'] == 'OTHER') {
+                otherDutiesCount++;
+              } else {
+                regularInstCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    final doorstepDone = _students.where((s) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        return false;
+      }
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final hasMatchingVisit = rawVisits.any((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      });
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty && createdDateKey.compareTo(startDateStr) >= 0 && createdDateKey.compareTo(endDateStr) <= 0);
+
+      final matches = _reportType == 'visits'
+          ? hasMatchingVisit
+          : (_reportType == 'new_students'
+              ? isCreatedInRange
+              : (_reportType == 'star_leads'
+                  ? (!hasDateRange || hasMatchingVisit || isCreatedInRange)
+                  : (hasMatchingVisit || isCreatedInRange)));
+
+      return matches && s['doorstepCompleted'] == true;
+    }).length;
+
+    final relevantStudentsTotal = _students.where((s) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        return false;
+      }
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final hasMatchingVisit = rawVisits.any((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      });
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty && createdDateKey.compareTo(startDateStr) >= 0 && createdDateKey.compareTo(endDateStr) <= 0);
+
+      return _reportType == 'visits'
+          ? hasMatchingVisit
+          : (_reportType == 'new_students'
+              ? isCreatedInRange
+              : (_reportType == 'star_leads'
+                  ? (!hasDateRange || hasMatchingVisit || isCreatedInRange)
+                  : (hasMatchingVisit || isCreatedInRange)));
+    }).length;
+
+    final int pendingCount = relevantStudentsTotal - doorstepDone;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFF0F172A)),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          'Generate PDF Report',
+          style: GoogleFonts.outfit(
+            color: const Color(0xFF0F172A),
+            fontWeight: FontWeight.w700,
+            fontSize: 18,
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: Color(0xFF4F46E5)),
+            onPressed: () {
+              _fetchStats();
+              _fetchReportData();
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // CARD 1: Filters (Date, Category, Locations)
+            _buildFilterCard(),
+            const SizedBox(height: 16),
+
+            // CARD 2: Column Selection
+            _buildColumnSelectionCard(),
+            const SizedBox(height: 16),
+
+            // CARD 3: Report Summary & Actions
+            _buildSummaryAndActionsCard(totalVisitsCount, newStudentsCount, activeDates.length, doorstepDone, pendingCount, otherDutiesCount, regularInstCount, starLeadsCount: starLeadsCount),
+            const SizedBox(height: 20),
+
+            // CARD 4: Records Preview
+            _buildRecordsPreview(totalVisitsCount),
+            const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==================== CARD 1: FILTER CONTROLS ====================
+  Widget _buildFilterCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header + All-Time Checkbox
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.calendar_today_rounded, size: 18, color: Color(0xFF4F46E5)),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Select Date Range',
+                    style: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+              InkWell(
+                onTap: () {
+                  setState(() => _isAllTime = !(_isAllTime == true));
+                  _fetchReportData();
+                },
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: (_isAllTime == true) ? const Color(0xFFEEF2FF) : const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: (_isAllTime == true) ? const Color(0xFF4F46E5) : const Color(0xFFCBD5E1),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 16,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: (_isAllTime == true) ? const Color(0xFF4F46E5) : Colors.transparent,
+                          border: Border.all(
+                            color: (_isAllTime == true) ? const Color(0xFF4F46E5) : const Color(0xFF94A3B8),
+                            width: 1.5,
+                          ),
+                        ),
+                        child: (_isAllTime == true)
+                            ? const Icon(Icons.check, size: 10, color: Colors.white)
+                            : null,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'All Time',
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: (_isAllTime == true) ? const Color(0xFF4F46E5) : const Color(0xFF475569),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Report Category Dropdown
+          Text(
+            'Report Category',
+            style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: const Color(0xFF334155)),
+          ),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF0FDFA),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF0D9488)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: ['all', 'new_students', 'visits', 'star_leads'].contains(_reportType) ? _reportType : 'all',
+                isExpanded: true,
+                icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Color(0xFF0D9488)),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'all',
+                    child: Text('👥 All (New Students + Village Visits)'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'new_students',
+                    child: Text('🆕 New Students Only'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'visits',
+                    child: Text('🏡 Village Visits Only'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'star_leads',
+                    child: Text('⭐ Star Leads Only'),
+                  ),
+                ],
+                onChanged: (val) {
+                  if (val != null) {
+                    setState(() => _reportType = val);
+                    _fetchReportData();
+                  }
+                },
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Date Pickers (Disabled if All Time is checked)
+          Opacity(
+            opacity: _isAllTime ? 0.4 : 1.0,
+            child: IgnorePointer(
+              ignoring: _isAllTime,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('From Date', style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF64748B))),
+                        const SizedBox(height: 4),
+                        InkWell(
+                          onTap: () => _pickDate(true),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: const Color(0xFFCBD5E1)),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(_formatDisplayDate(_startDate), style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600)),
+                                const Icon(Icons.calendar_month_outlined, size: 16, color: Color(0xFF64748B)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('To Date', style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF64748B))),
+                        const SizedBox(height: 4),
+                        InkWell(
+                          onTap: () => _pickDate(false),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: const Color(0xFFCBD5E1)),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(_formatDisplayDate(_endDate), style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600)),
+                                const Icon(Icons.calendar_month_outlined, size: 16, color: Color(0xFF64748B)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Location Filters: Mandal, Village, School Dropdowns
+          Text(
+            'Location Filters (Optional)',
+            style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: const Color(0xFF334155)),
+          ),
+          const SizedBox(height: 6),
+
+          // Mandal Dropdown
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _mandals.any((m) => m['id']?.toString() == _filterMandal) ? _filterMandal : '',
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('All Mandals')),
+                  ..._mandals.map((m) {
+                    final id = m['id']?.toString() ?? '';
+                    final name = ApiService.resolveConfig(id).isNotEmpty ? ApiService.resolveConfig(id) : id;
+                    final count = m['count'] ?? 0;
+                    return DropdownMenuItem(value: id, child: Text('$name ($count)'));
+                  }),
+                ],
+                onChanged: (val) {
+                  setState(() {
+                    _filterMandal = val ?? '';
+                    _filterVillage = '';
+                    _filterSchool = '';
+                  });
+                  _fetchStats();
+                  _fetchReportData();
+                },
+              ),
+            ),
+          ),
+
+          // Village Dropdown
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _villages.any((v) => v['id']?.toString() == _filterVillage) ? _filterVillage : '',
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('All Villages')),
+                  ..._villages.map((v) {
+                    final id = v['id']?.toString() ?? '';
+                    final name = ApiService.resolveConfig(id).isNotEmpty ? ApiService.resolveConfig(id) : id;
+                    final count = v['count'] ?? 0;
+                    return DropdownMenuItem(value: id, child: Text('$name ($count)'));
+                  }),
+                ],
+                onChanged: (val) {
+                  setState(() {
+                    _filterVillage = val ?? '';
+                    _filterSchool = '';
+                  });
+                  _fetchStats();
+                  _fetchReportData();
+                },
+              ),
+            ),
+          ),
+
+          // School Dropdown
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _schools.any((s) => s['id']?.toString() == _filterSchool) ? _filterSchool : '',
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('All Schools')),
+                  ..._schools.map((s) {
+                    final id = s['id']?.toString() ?? '';
+                    final name = ApiService.resolveConfig(id).isNotEmpty ? ApiService.resolveConfig(id) : id;
+                    final count = s['count'] ?? 0;
+                    return DropdownMenuItem(value: id, child: Text('$name ($count)'));
+                  }),
+                ],
+                onChanged: (val) {
+                  setState(() => _filterSchool = val ?? '');
+                  _fetchReportData();
+                },
+              ),
+            ),
+          ),
+
+          // Preview Report Data Button
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _loading ? null : _fetchReportData,
+              icon: _loading
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.search_rounded),
+              label: Text(_loading ? 'Fetching Data...' : 'Preview Report Data'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4F46E5),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== CARD 2: SELECT COLUMNS ====================
+  Widget _buildColumnSelectionCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Select Columns to Download',
+                    style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    '${_selectedColumns.length}/${_availableColumns.length} selected',
+                    style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedColumns.clear();
+                        _selectedColumns.addAll(_availableColumns.map((c) => c['id']!));
+                      });
+                    },
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      'Select All',
+                      style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: const Color(0xFF4F46E5)),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedColumns.clear();
+                      });
+                    },
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      'Clear',
+                      style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: const Color(0xFFEF4444)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _availableColumns.map((col) {
+              final isChecked = _selectedColumns.contains(col['id']);
+              return FilterChip(
+                label: Text(col['label']!),
+                selected: isChecked,
+                selectedColor: const Color(0xFFEEF2FF),
+                checkmarkColor: const Color(0xFF4F46E5),
+                labelStyle: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: isChecked ? const Color(0xFF4F46E5) : const Color(0xFF475569),
+                ),
+                backgroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  side: BorderSide(
+                    color: isChecked ? const Color(0xFF4F46E5) : const Color(0xFFCBD5E1),
+                  ),
+                ),
+                onSelected: (selected) {
+                  setState(() {
+                    if (selected) {
+                      _selectedColumns.add(col['id']!);
+                    } else {
+                      _selectedColumns.remove(col['id']!);
+                    }
+                  });
+                },
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== CARD 3: SUMMARY & ACTIONS ====================
+  Widget _buildSummaryAndActionsCard(int totalVisitsCount, int newStudentsCount, int activeDatesCount, int doorstepDone, int pendingCount, int otherDutiesCount, int regularInstCount, {int starLeadsCount = 0}) {
+    final totalEntries = _reportType == 'star_leads'
+        ? starLeadsCount
+        : (totalVisitsCount + newStudentsCount + otherDutiesCount + regularInstCount);
+    final hasRecords = totalEntries > 0;
+    String subtitle;
+    if (_reportType == 'visits') {
+      if (totalVisitsCount == 0 && otherDutiesCount > 0) {
+        subtitle = 'Found $otherDutiesCount Official Duties on $activeDatesCount Active ${activeDatesCount == 1 ? "Date" : "Dates"}';
+      } else if (otherDutiesCount > 0 || regularInstCount > 0) {
+        subtitle = 'Found $totalVisitsCount Visits & ${otherDutiesCount + regularInstCount} Duties/Institutions on $activeDatesCount Dates';
+      } else {
+        subtitle = 'Found $totalVisitsCount Visits on $activeDatesCount ${activeDatesCount == 1 ? "Date" : "Dates"}';
+      }
+    } else if (_reportType == 'new_students') {
+      subtitle = 'Found $newStudentsCount New Admission Students on $activeDatesCount ${activeDatesCount == 1 ? "Date" : "Dates"}';
+    } else if (_reportType == 'star_leads') {
+      subtitle = 'Found $starLeadsCount Unique Star Leads (Zero Duplicates)';
+    } else {
+      if (otherDutiesCount > 0 || regularInstCount > 0) {
+        subtitle = 'Found $totalEntries Entries ($totalVisitsCount Visits + $newStudentsCount New) & ${otherDutiesCount + regularInstCount} Duties/Institutions';
+      } else {
+        subtitle = 'Found $totalEntries Entries ($totalVisitsCount Visits + $newStudentsCount New Leads) on $activeDatesCount ${activeDatesCount == 1 ? "Date" : "Dates"}';
+      }
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+        ),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const Icon(Icons.description_rounded, size: 40, color: Color(0xFF38BDF8)),
+          const SizedBox(height: 8),
+          Text(
+            'Report is Ready',
+            style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.inter(fontSize: 13, color: const Color(0xFF94A3B8)),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (_reportType == 'visits') ...[
+                if (totalVisitsCount == 0 && otherDutiesCount > 0) ...[
+                  _buildHeaderMetric('Total Visits', totalVisitsCount.toString(), const Color(0xFF38BDF8)),
+                  const SizedBox(width: 16),
+                  _buildHeaderMetric('Official Duties', otherDutiesCount.toString(), const Color(0xFFA855F7)),
+                  const SizedBox(width: 16),
+                  _buildHeaderMetric('Active Dates', activeDatesCount.toString(), const Color(0xFFFBBF24)),
+                  const SizedBox(width: 16),
+                  _buildHeaderMetric('Doorstep Done', doorstepDone.toString(), const Color(0xFF34D399)),
+                ] else ...[
+                  _buildHeaderMetric('Total Visits', (totalVisitsCount + otherDutiesCount + regularInstCount).toString(), const Color(0xFF38BDF8)),
+                  const SizedBox(width: 16),
+                  _buildHeaderMetric('Active Dates', activeDatesCount.toString(), const Color(0xFFFBBF24)),
+                  const SizedBox(width: 16),
+                  _buildHeaderMetric('Doorstep Done', doorstepDone.toString(), const Color(0xFF34D399)),
+                ],
+              ] else if (_reportType == 'new_students') ...[
+                _buildHeaderMetric('New Students', newStudentsCount.toString(), const Color(0xFF38BDF8)),
+                const SizedBox(width: 24),
+                _buildHeaderMetric('Active Dates', activeDatesCount.toString(), const Color(0xFFFBBF24)),
+                const SizedBox(width: 24),
+                _buildHeaderMetric('Doorstep Done', doorstepDone.toString(), const Color(0xFF34D399)),
+              ] else if (_reportType == 'star_leads') ...[
+                _buildHeaderMetric('Star Leads', starLeadsCount.toString(), const Color(0xFFF59E0B)),
+                const SizedBox(width: 20),
+                _buildHeaderMetric('Doorstep Done', doorstepDone.toString(), const Color(0xFF34D399)),
+                const SizedBox(width: 20),
+                _buildHeaderMetric('Pending', pendingCount.toString(), const Color(0xFFF87171)),
+              ] else ...[
+                _buildHeaderMetric('Total Entries', totalEntries.toString(), const Color(0xFF38BDF8)),
+                const SizedBox(width: 16),
+                _buildHeaderMetric('Visits', totalVisitsCount.toString(), const Color(0xFFA78BFA)),
+                const SizedBox(width: 16),
+                _buildHeaderMetric('New Leads', newStudentsCount.toString(), const Color(0xFF34D399)),
+                const SizedBox(width: 16),
+                _buildHeaderMetric('Active Dates', activeDatesCount.toString(), const Color(0xFFFBBF24)),
+              ],
+            ],
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (!hasRecords || _generatingPdf) ? null : _handleDownloadPdf,
+                  icon: _generatingPdf
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.file_download_outlined),
+                  label: Text(_generatingPdf ? 'Generating...' : 'Download PDF'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4F46E5),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (!hasRecords || _generatingPdf) ? null : _handleShareReport,
+                  icon: const Icon(Icons.share_outlined, color: Color(0xFF25D366)),
+                  label: const Text('Share to WhatsApp'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: const Color(0xFF0F172A),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(color: Color(0xFF25D366)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== CARD 4: RECORDS PREVIEW ====================
+  Widget _buildRecordsPreview(int totalVisitsCount) {
+    final bool hasDateRange = !_isAllTime;
+    final String startDateStr = _formatApiDate(_startDate);
+    final String endDateStr = _formatApiDate(_endDate);
+
+    final Set<String> seenPreviewStudentIds = {};
+    final filteredStudents = _students.where((s) {
+      if (_reportType == 'star_leads' && !_isStarLead(s)) {
+        return false;
+      }
+      final sId = (s['id']?.toString() ?? '').isNotEmpty
+          ? s['id'].toString()
+          : ((s['phone']?.toString() ?? '').isNotEmpty ? s['phone'].toString() : (s['studentName']?.toString() ?? ''));
+      if (_reportType == 'star_leads' && seenPreviewStudentIds.contains(sId)) {
+        return false;
+      }
+
+      final rawVisits = (s['visits'] as List<dynamic>?) ?? [];
+      final hasMatchingVisit = rawVisits.any((v) {
+        if (!hasDateRange) return true;
+        final vKey = _getDateKey(v['visitDate']);
+        return vKey.isNotEmpty && vKey.compareTo(startDateStr) >= 0 && vKey.compareTo(endDateStr) <= 0;
+      });
+
+      final createdDateKey = _getDateKey(s['createdAt']);
+      final isCreatedInRange = !hasDateRange ||
+          (createdDateKey.isNotEmpty && createdDateKey.compareTo(startDateStr) >= 0 && createdDateKey.compareTo(endDateStr) <= 0);
+
+      final bool matches;
+      if (_reportType == 'visits') {
+        matches = hasMatchingVisit;
+      } else if (_reportType == 'new_students') {
+        matches = isCreatedInRange;
+      } else if (_reportType == 'star_leads') {
+        matches = !hasDateRange || hasMatchingVisit || isCreatedInRange;
+      } else {
+        matches = hasMatchingVisit || isCreatedInRange;
+      }
+
+      if (matches && _reportType == 'star_leads' && sId.isNotEmpty) {
+        seenPreviewStudentIds.add(sId);
+      }
+      return matches;
+    }).toList();
+
+    final filteredInstVisits = (_reportType == 'star_leads' || _reportType == 'new_students')
+        ? <dynamic>[]
+        : _institutionVisits.where((iv) {
+            if (iv is! Map<String, dynamic>) return false;
+            if (!hasDateRange) return true;
+            final dKey = _getDateKey(iv['visitDate']);
+            return dKey.isNotEmpty && dKey.compareTo(startDateStr) >= 0 && dKey.compareTo(endDateStr) <= 0;
+          }).toList();
+
+    String previewTitle = 'Report Records Preview (${filteredStudents.length + filteredInstVisits.length})';
+    if (_reportType == 'visits') {
+      if (filteredStudents.isEmpty && filteredInstVisits.isNotEmpty) {
+        previewTitle = 'Report Records Preview (${filteredInstVisits.length} Duty/Institution Logs)';
+      } else if (filteredInstVisits.isNotEmpty) {
+        previewTitle = 'Report Records Preview ($totalVisitsCount Visits & ${filteredInstVisits.length} Duties/Institutions)';
+      } else {
+        previewTitle = 'Report Records Preview ($totalVisitsCount Visits across ${filteredStudents.length} Students)';
+      }
+    } else if (_reportType == 'star_leads') {
+      previewTitle = 'Unique Star Leads List (${filteredStudents.length} Students)';
+    } else if (_reportType == 'new_students') {
+      previewTitle = 'New Students Preview (${filteredStudents.length} Students)';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                previewTitle,
+                style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              _dateRangeDisplay,
+              style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF64748B)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // 1. Institution Visits & Duties Preview Section
+        if (filteredInstVisits.isNotEmpty) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            margin: const EdgeInsets.only(bottom: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3E8FF),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFE9D5FF)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.assignment_rounded, size: 18, color: Color(0xFF9333EA)),
+                const SizedBox(width: 8),
+                Text(
+                  'Official Duties & Institution Visits (${filteredInstVisits.length})',
+                  style: GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 13, color: const Color(0xFF7E22CE)),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE9D5FF)),
+            ),
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: filteredInstVisits.length,
+              separatorBuilder: (context, index) => const Divider(height: 1, color: Color(0xFFF3E8FF)),
+              itemBuilder: (context, idx) {
+                final iv = filteredInstVisits[idx];
+                final type = iv['type']?.toString() ?? 'OTHER';
+                final isOther = type == 'OTHER';
+                final isSchool = type == 'SCHOOL';
+                final dt = DateTime.tryParse(iv['visitDate']?.toString() ?? '');
+                final dateStr = dt != null ? _formatDisplayDate(dt) : (iv['visitDate']?.toString() ?? '');
+
+                return Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: isOther
+                              ? const Color(0xFFF3E8FF)
+                              : isSchool
+                                  ? const Color(0xFFFEF3C7)
+                                  : const Color(0xFFDCFCE7),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          isOther
+                              ? Icons.assignment_rounded
+                              : isSchool
+                                  ? Icons.school_rounded
+                                  : Icons.menu_book_rounded,
+                          size: 18,
+                          color: isOther
+                              ? const Color(0xFF9333EA)
+                              : isSchool
+                                  ? const Color(0xFFD97706)
+                                  : const Color(0xFF16A34A),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: isOther
+                                        ? const Color(0xFFF3E8FF)
+                                        : isSchool
+                                            ? const Color(0xFFFDE68A)
+                                            : const Color(0xFFBBF7D0),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    isOther ? 'OTHER DUTY' : type,
+                                    style: GoogleFonts.inter(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                      color: isOther
+                                          ? const Color(0xFF7E22CE)
+                                          : isSchool
+                                              ? const Color(0xFF92400E)
+                                              : const Color(0xFF166534),
+                                    ),
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  dateStr,
+                                  style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: const Color(0xFF64748B)),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              iv['name']?.toString() ?? 'Duty Log',
+                              style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700),
+                            ),
+                            if (iv['village'] != null && iv['village'].toString().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  'Location: ${iv['village']}',
+                                  style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF64748B)),
+                                ),
+                              ),
+                            if (iv['remarks'] != null && iv['remarks'].toString().trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  'Remarks: "${iv['remarks']}"',
+                                  style: GoogleFonts.inter(fontSize: 11, fontStyle: FontStyle.italic, color: const Color(0xFF64748B)),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+
+        // 2. Students Doorstep List Section
+        if (filteredStudents.isEmpty && filteredInstVisits.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Center(
+              child: Column(
+                children: [
+                  const Icon(Icons.folder_open_rounded, size: 40, color: Color(0xFF94A3B8)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No students or duties found in the selected date range / filters.',
+                    style: GoogleFonts.inter(color: const Color(0xFF64748B)),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: () {
+                      setState(() => _isAllTime = true);
+                      _fetchReportData();
+                    },
+                    child: const Text('Switch to All Time'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (filteredStudents.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: filteredStudents.length,
+              separatorBuilder: (context, index) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+              itemBuilder: (context, idx) {
+                final s = filteredStudents[idx];
+                final grp = (s['group'] ?? '').toString().trim();
+                final isDone = s['doorstepCompleted'] == true;
+
+                return Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${idx + 1}',
+                            style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    s['studentName'] ?? 'No Name',
+                                    style: GoogleFonts.outfit(fontSize: 15, fontWeight: FontWeight.w700),
+                                  ),
+                                ),
+                                if (_isStarLead(s)) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFEF3C7),
+                                      borderRadius: BorderRadius.circular(4),
+                                      border: Border.all(color: const Color(0xFFFDE68A)),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.star_rounded, size: 12, color: Color(0xFFD97706)),
+                                        const SizedBox(width: 2),
+                                        Text(
+                                          'STAR',
+                                          style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.bold, color: const Color(0xFFD97706)),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Phone: ${s['phone'] ?? 'N/A'} • ${ApiService.resolveConfig(s['schoolName']).isNotEmpty ? ApiService.resolveConfig(s['schoolName']) : 'No School'}',
+                              style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF64748B)),
+                            ),
+                            if (ApiService.resolveConfig(s['village']).isNotEmpty)
+                              Text(
+                                'Village: ${ApiService.resolveConfig(s['village'])}',
+                                style: GoogleFonts.inter(fontSize: 12, color: const Color(0xFF64748B)),
+                              ),
+                            if (s['remarks'] != null && s['remarks'].toString().trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  'Remarks: ${s['remarks']}',
+                                  style: GoogleFonts.inter(fontSize: 11, fontStyle: FontStyle.italic, color: const Color(0xFF64748B)),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          if (grp.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              margin: const EdgeInsets.only(bottom: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEEF2FF),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                grp,
+                                style: GoogleFonts.inter(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: const Color(0xFF4F46E5),
+                                ),
+                              ),
+                            ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: isDone ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: isDone ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+                              ),
+                            ),
+                            child: Text(
+                              isDone ? 'Doorstep Done' : 'Pending',
+                              style: GoogleFonts.inter(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: isDone ? const Color(0xFF059669) : const Color(0xFFD97706),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildHeaderMetric(String label, String value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          value,
+          style: GoogleFonts.outfit(fontSize: 20, fontWeight: FontWeight.w800, color: color),
+        ),
+        Text(
+          label,
+          style: GoogleFonts.inter(fontSize: 11, color: const Color(0xFF94A3B8)),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReportPdfEntry {
+  final String dateKey;
+  final String dateFormatted;
+  final String dayName;
+  final dynamic student;
+  final dynamic visit;
+  final String visitNumber;
+  final String remarks;
+  final String entryType;
+
+  _ReportPdfEntry({
+    required this.dateKey,
+    required this.dateFormatted,
+    required this.dayName,
+    required this.student,
+    this.visit,
+    required this.visitNumber,
+    required this.remarks,
+    required this.entryType,
+  });
+}

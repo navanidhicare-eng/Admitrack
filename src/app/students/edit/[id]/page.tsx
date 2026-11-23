@@ -1,0 +1,757 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter, useParams } from 'next/navigation';
+import { ArrowLeft, Save, Clock, UserCheck } from 'lucide-react';
+import Link from 'next/link';
+
+export default function EditStudent() {
+  const router = useRouter();
+  const params = useParams();
+  const studentId = params.id as string;
+
+  const [formData, setFormData] = useState({
+    employeeId: '',
+    studentName: '',
+    gender: '',
+    fatherName: '',
+    occupation: '',
+    address: '',
+    phone: '',
+    whatsapp: '',
+    group: '',
+    visitNumber: '',
+    schoolName: '',
+    marks: '',
+    remarks: '',
+    district: '',
+    mandal: '',
+    village: '',
+    studyInterestedAt: '',
+    educationStage: '',
+    ableToBearFee: '',
+    schoolDistrict: '',
+    schoolMandal: '',
+    schoolVillage: '',
+    doorstepCompleted: false,
+  });
+
+  const [studentRaw, setStudentRaw] = useState<any>(null);
+  const [sameAsSchoolAddress, setSameAsSchoolAddress] = useState(false);
+  const [configs, setConfigs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [visits, setVisits] = useState<any[]>([]);
+  const [schoolStats, setSchoolStats] = useState<{ collected: number } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [employees, setEmployees] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (formData.schoolName) {
+      fetch(`/api/schools/stats?schoolName=${encodeURIComponent(formData.schoolName)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.collected !== undefined) {
+            setSchoolStats(data);
+          }
+        });
+    } else {
+      setSchoolStats(null);
+    }
+  }, [formData.schoolName]);
+
+  useEffect(() => {
+    fetchConfigs();
+    fetchStudent();
+    fetchVisits();
+
+    fetch('/api/auth/me')
+      .then(r => r.json())
+      .then(d => {
+        if (d.user && d.user.role === 'ADMIN') {
+          setIsAdmin(true);
+          fetch('/api/users')
+            .then(res => res.json())
+            .then(uData => {
+              if (uData.users) {
+                setEmployees(uData.users.filter((u: any) => u.role === 'EMPLOYEE' || u.role === 'TEAM_LEADER'));
+              }
+            });
+        }
+      })
+      .catch(console.error);
+  }, [studentId]);
+
+  const fetchVisits = async () => {
+    try {
+      const res = await fetch(`/api/students/${studentId}/visits`);
+      if (res.ok) {
+        const data = await res.json();
+        setVisits(data.visits || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchConfigs = async () => {
+    try {
+      const res = await fetch('/api/config');
+      const data = await res.json();
+      if (data.configs) {
+        setConfigs(data.configs);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchStudent = async () => {
+    try {
+      const res = await fetch(`/api/students/${studentId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setStudentRaw(data.student);
+      } else {
+        alert("Failed to load student details");
+        router.back();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Robustly resolve both school and residence address hierarchies when configs or student data load
+  useEffect(() => {
+    if (!studentRaw) return;
+    const s = studentRaw;
+
+    // 1. Resolve School Hierarchy
+    let schoolVillage = '';
+    let schoolMandal = '';
+    let schoolDistrict = '';
+
+    // First try from schoolName if available
+    if (s.schoolName && configs.length > 0) {
+      const sNorm = s.schoolName.trim().toLowerCase();
+      const schoolCfg = configs.find(c => c.type === 'SCHOOL' && (c.value?.trim().toLowerCase() === sNorm || c.id === s.schoolName));
+      if (schoolCfg && schoolCfg.parentId) {
+        schoolVillage = schoolCfg.parentId;
+      }
+    }
+
+    // Fallback to stored schoolArea if schoolVillage not resolved
+    if (!schoolVillage && s.schoolArea) {
+      schoolVillage = s.schoolArea;
+    }
+
+    // Climb up from schoolVillage
+    if (schoolVillage && configs.length > 0) {
+      const vNorm = schoolVillage.trim().toLowerCase();
+      const villageCfg = configs.find(c => c.type === 'VILLAGE' && (c.id === schoolVillage || c.value?.trim().toLowerCase() === vNorm));
+      if (villageCfg) {
+        schoolVillage = villageCfg.id;
+        if (villageCfg.parentId) {
+          schoolMandal = villageCfg.parentId;
+          const mandalCfg = configs.find(c => c.type === 'MANDAL' && (c.id === schoolMandal || c.value?.trim().toLowerCase() === schoolMandal.toLowerCase()));
+          if (mandalCfg && mandalCfg.parentId) {
+            schoolDistrict = mandalCfg.parentId;
+          }
+        }
+      }
+    }
+
+    // 2. Resolve Residence Hierarchy
+    let resVillage = s.village || '';
+    let resMandal = s.mandal || '';
+    let resDistrict = s.district || '';
+
+    if (resVillage && configs.length > 0) {
+      const vNorm = resVillage.trim().toLowerCase();
+      const vCfg = configs.find(c => c.type === 'VILLAGE' && (c.id === resVillage || c.value?.trim().toLowerCase() === vNorm));
+      if (vCfg) {
+        resVillage = vCfg.id;
+        if (!resMandal && vCfg.parentId) {
+          resMandal = vCfg.parentId;
+        }
+      }
+    }
+    if (resMandal && configs.length > 0) {
+      const mNorm = resMandal.trim().toLowerCase();
+      const mCfg = configs.find(c => c.type === 'MANDAL' && (c.id === resMandal || c.value?.trim().toLowerCase() === mNorm));
+      if (mCfg) {
+        resMandal = mCfg.id;
+        if (!resDistrict && mCfg.parentId) {
+          resDistrict = mCfg.parentId;
+        }
+      }
+    }
+    if (resDistrict && configs.length > 0) {
+      const dNorm = resDistrict.trim().toLowerCase();
+      const dCfg = configs.find(c => c.type === 'DISTRICT' && (c.id === resDistrict || c.value?.trim().toLowerCase() === dNorm));
+      if (dCfg) {
+        resDistrict = dCfg.id;
+      }
+    }
+
+    // 3. Auto-detect if residence is same as school
+    const isSame = Boolean(
+      schoolDistrict &&
+      resDistrict &&
+      schoolDistrict === resDistrict &&
+      schoolMandal === resMandal &&
+      schoolVillage === resVillage
+    );
+    setSameAsSchoolAddress(isSame);
+
+    setFormData({
+      employeeId: s.employeeId || '',
+      studentName: s.studentName || '',
+      gender: s.gender || '',
+      fatherName: s.fatherName || '',
+      occupation: s.occupation || '',
+      address: s.address || '',
+      phone: s.phone || '',
+      whatsapp: s.whatsapp || '',
+      group: s.group || '',
+      visitNumber: s.visitNumber || '',
+      schoolName: s.schoolName || '',
+      marks: s.marks || '',
+      remarks: s.remarks || '',
+      district: resDistrict,
+      mandal: resMandal,
+      village: resVillage,
+      studyInterestedAt: s.studyInterestedAt || '',
+      educationStage: s.educationStage || '',
+      ableToBearFee: s.ableToBearFee || '',
+      schoolDistrict,
+      schoolMandal,
+      schoolVillage,
+      doorstepCompleted: s.doorstepCompleted || false,
+    });
+  }, [configs, studentRaw]);
+
+  const getByType = (type: string) => configs.filter(c => c.type === type);
+  const getByParent = (type: string, parentId: string) => configs.filter(c => c.type === type && c.parentId === parentId);
+
+  const handleSameAsSchoolAddressToggle = (checked: boolean) => {
+    setSameAsSchoolAddress(checked);
+    if (checked) {
+      if (formData.schoolDistrict) {
+        setFormData(prev => ({
+          ...prev,
+          district: prev.schoolDistrict,
+          mandal: prev.schoolMandal,
+          village: prev.schoolVillage,
+        }));
+      } else {
+        alert('Please select School Area (District, Mandal, Village) first.');
+      }
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    if (name === 'phone' || name === 'whatsapp') {
+      let cleaned = value.replace(/\D/g, '');
+      if (cleaned.length === 12 && cleaned.startsWith('91')) {
+        cleaned = cleaned.slice(2);
+      } else if (cleaned.length === 11 && cleaned.startsWith('0')) {
+        cleaned = cleaned.slice(1);
+      } else if (cleaned.length > 10) {
+        cleaned = cleaned.slice(-10);
+      }
+      setFormData({ ...formData, [name]: cleaned });
+      return;
+    }
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (formData.phone) {
+      const clean = formData.phone.replace(/\D/g, '');
+      if (clean.length > 0 && clean.length < 10) {
+        alert('Please enter a valid 10-digit mobile number.');
+        return;
+      }
+    }
+
+    setSaving(true);
+    const submitData = {
+      ...formData,
+      schoolArea: formData.schoolVillage || '',
+      whatsapp: formData.whatsapp
+    };
+
+    try {
+      const res = await fetch(`/api/students/${studentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(submitData)
+      });
+      const data = await res.json();
+      
+      if (res.ok) {
+        alert('Student updated successfully!');
+        router.refresh();
+        router.back();
+      } else {
+        alert(data.error || 'Failed to update student');
+      }
+    } catch (error) {
+      alert('An error occurred while saving.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="container" style={{ paddingBottom: '100px' }}>
+      <header className="app-header" style={{ margin: '-1rem -1rem 1rem -1rem', padding: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#fff' }}>
+        <button onClick={() => router.back()} className="btn-icon" style={{ background: 'none', border: 'none', color: '#0f172a', cursor: 'pointer' }}>
+          <ArrowLeft size={24} />
+        </button>
+        <h1 style={{ margin: 0, fontSize: '1.25rem', color: '#0f172a' }}>Edit Student</h1>
+      </header>
+
+      {loading ? (
+        <p>Loading student data...</p>
+      ) : (
+        <form className="card" onSubmit={handleSave}>
+          {isAdmin && (
+            <div style={{
+              backgroundColor: '#f0f9ff',
+              border: '1px solid #bae6fd',
+              borderRadius: '8px',
+              padding: '1.25rem',
+              marginBottom: '1.5rem'
+            }}>
+              <label className="form-label" htmlFor="employeeId" style={{ fontWeight: 700, color: '#0369a1', display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                <UserCheck size={18} /> Assigned Staff Member (Admin Transfer)
+              </label>
+              <select
+                id="employeeId"
+                name="employeeId"
+                className="form-control"
+                value={formData.employeeId}
+                onChange={handleChange}
+                style={{ backgroundColor: '#fff', fontSize: '0.95rem' }}
+              >
+                <option value="">-- Choose Staff Member --</option>
+                {employees.map(emp => (
+                  <option key={emp.employeeId} value={emp.employeeId}>
+                    {emp.name} ({emp.employeeId})
+                  </option>
+                ))}
+              </select>
+              <small style={{ color: '#0284c7', display: 'block', marginTop: '0.35rem', fontSize: '0.8rem' }}>
+                ℹ️ Changing this staff member will immediately transfer this student to their login and mobile app.
+              </small>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="studentName">Student Name</label>
+            <input type="text" id="studentName" name="studentName" className="form-control" value={formData.studentName} onChange={handleChange} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="gender">Gender</label>
+            <select id="gender" name="gender" className="form-control" value={formData.gender} onChange={handleChange}>
+              <option value="">Select Gender</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="fatherName">Father's Name</label>
+            <input type="text" id="fatherName" name="fatherName" className="form-control" value={formData.fatherName} onChange={handleChange} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="occupation">Occupation</label>
+            <input 
+              type="text" 
+              id="occupation" 
+              name="occupation" 
+              className="form-control" 
+              placeholder="e.g. Farmer, Business, Teacher, Driver" 
+              value={formData.occupation} 
+              onChange={handleChange} 
+            />
+          </div>
+
+
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="phone">Phone Number</label>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <span style={{
+                padding: '0.625rem 0.85rem',
+                backgroundColor: '#f1f5f9',
+                border: '1px solid #cbd5e1',
+                borderRight: 'none',
+                borderRadius: '8px 0 0 8px',
+                color: '#475569',
+                fontWeight: 700,
+                fontSize: '0.875rem',
+                userSelect: 'none'
+              }}>
+                +91
+              </span>
+              <input 
+                type="tel" 
+                id="phone" 
+                name="phone" 
+                className="form-control" 
+                placeholder="10-digit mobile number"
+                maxLength={10}
+                value={formData.phone} 
+                onChange={handleChange} 
+                style={{ borderRadius: '0 8px 8px 0' }}
+              />
+            </div>
+            {formData.phone && formData.phone.length > 0 && formData.phone.length < 10 && (
+              <span style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px', display: 'block' }}>
+                {10 - formData.phone.length} more digit{10 - formData.phone.length > 1 ? 's' : ''} needed
+              </span>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="whatsapp">Alternate Number (Optional)</label>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <span style={{
+                padding: '0.625rem 0.85rem',
+                backgroundColor: '#f1f5f9',
+                border: '1px solid #cbd5e1',
+                borderRight: 'none',
+                borderRadius: '8px 0 0 8px',
+                color: '#475569',
+                fontWeight: 700,
+                fontSize: '0.875rem',
+                userSelect: 'none'
+              }}>
+                +91
+              </span>
+              <input 
+                type="tel" 
+                id="whatsapp" 
+                name="whatsapp" 
+                className="form-control" 
+                placeholder="10-digit alternate mobile number"
+                maxLength={10}
+                value={formData.whatsapp} 
+                onChange={handleChange} 
+                style={{ borderRadius: '0 8px 8px 0' }}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="group">Group Opting</label>
+            <select id="group" name="group" className="form-control" value={formData.group} onChange={handleChange}>
+              <option value="">Select Group</option>
+              {getByType('GROUP').map(g => (
+                <option key={g.id} value={g.value}>{g.value}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Previous School / School Area */}
+          <div className="form-group">
+            <label className="form-label">School Area (District)</label>
+            <select id="schoolDistrict" name="schoolDistrict" className="form-control" value={formData.schoolDistrict} onChange={(e) => {
+              const val = e.target.value;
+              setFormData(prev => ({
+                ...prev, 
+                schoolDistrict: val, 
+                schoolMandal: '', 
+                schoolVillage: '', 
+                schoolName: '',
+                ...(sameAsSchoolAddress ? { district: val, mandal: '', village: '' } : {})
+              }));
+            }}>
+              <option value="">Select School District</option>
+              {getByType('DISTRICT').map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+            </select>
+          </div>
+
+          {formData.schoolDistrict && (
+            <div className="form-group">
+              <label className="form-label">School Area (Mandal)</label>
+              <select id="schoolMandal" name="schoolMandal" className="form-control" value={formData.schoolMandal} onChange={(e) => {
+                const val = e.target.value;
+                setFormData(prev => ({
+                  ...prev, 
+                  schoolMandal: val, 
+                  schoolVillage: '', 
+                  schoolName: '',
+                  ...(sameAsSchoolAddress ? { mandal: val, village: '' } : {})
+                }));
+              }}>
+                <option value="">Select School Mandal</option>
+                {getByParent('MANDAL', formData.schoolDistrict).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+          )}
+
+          {formData.schoolMandal && (
+            <div className="form-group">
+              <label className="form-label">School Area (Village)</label>
+              <select id="schoolVillage" name="schoolVillage" className="form-control" value={formData.schoolVillage} onChange={(e) => {
+                const val = e.target.value;
+                setFormData(prev => ({
+                  ...prev, 
+                  schoolVillage: val, 
+                  schoolName: '',
+                  ...(sameAsSchoolAddress ? { village: val } : {})
+                }));
+              }}>
+                <option value="">Select School Village</option>
+                {getByParent('VILLAGE', formData.schoolMandal).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+          )}
+
+          {(formData.schoolVillage || formData.schoolName) && (
+            <div className="form-group">
+              <label className="form-label" htmlFor="schoolName">School Name</label>
+              <select id="schoolName" name="schoolName" className="form-control" value={formData.schoolName} onChange={handleChange}>
+                <option value="">Select School Name</option>
+                {getByParent('SCHOOL', formData.schoolVillage).map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+                {!formData.schoolVillage && formData.schoolName && <option value={formData.schoolName}>{formData.schoolName}</option>}
+              </select>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="marks">Marks / Grade / GPA</label>
+            <input type="text" id="marks" name="marks" className="form-control" value={formData.marks} onChange={handleChange} placeholder="e.g., 95%, 9.5, 950" />
+          </div>
+
+          {formData.schoolName && schoolStats && (
+            <div style={{ marginTop: '1rem', marginBottom: '1.5rem', padding: '1rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              {(() => {
+                const schoolConfig = configs.find(c => c.value === formData.schoolName && c.type === 'SCHOOL');
+                const strength = schoolConfig?.strength || 0;
+                
+                const gradeMap: Record<string, string> = {
+                  'A+': 'A+ (Vizag Hostel Schools)',
+                  'A': 'A (Local Corporate Schools)',
+                  'B': 'B (Local Private Schools)',
+                  'C': 'C (ZPH Schools)'
+                };
+                
+                const grade = schoolConfig?.grade ? gradeMap[schoolConfig.grade] || schoolConfig.grade : 'N/A';
+                
+                const collected = schoolStats.collected;
+                const remaining = Math.max(0, strength - collected);
+                const percentage = strength > 0 ? Math.min(100, Math.round((collected / strength) * 100)) : 0;
+                
+                return (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                      <span style={{ fontWeight: 600 }}>School Stats</span>
+                      <span style={{ background: '#dbeafe', color: '#1e40af', padding: '0.1rem 0.5rem', borderRadius: '4px', fontWeight: 500 }}>Grade: {grade}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#64748b', marginBottom: '0.25rem' }}>
+                      <span>Total Strength: {strength}</span>
+                      <span>Collected: {collected}</span>
+                      <span>Remaining: {remaining}</span>
+                    </div>
+                    {strength > 0 ? (
+                      <div style={{ height: '8px', width: '100%', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${percentage}%`, background: percentage >= 100 ? '#10b981' : '#3b82f6', transition: 'width 0.3s ease' }}></div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '0.75rem', color: '#f59e0b', marginTop: '0.5rem' }}>Total strength is not configured for this school.</div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Residence / Location Details */}
+          <div style={{ 
+            marginTop: '1.5rem', 
+            marginBottom: '1.25rem', 
+            padding: '0.85rem 1rem', 
+            borderRadius: '12px', 
+            background: sameAsSchoolAddress ? '#eff6ff' : '#f8fafc', 
+            border: sameAsSchoolAddress ? '1.5px solid #3b82f6' : '1px solid #e2e8f0',
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '0.75rem', 
+            cursor: 'pointer',
+            transition: 'all 0.2s ease' 
+          }}
+          onClick={() => handleSameAsSchoolAddressToggle(!sameAsSchoolAddress)}
+          >
+            <input 
+              type="checkbox" 
+              id="sameAsSchoolAddressEdit" 
+              checked={sameAsSchoolAddress} 
+              onChange={(e) => handleSameAsSchoolAddressToggle(e.target.checked)}
+              style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: '#2563eb' }}
+              onClick={(e) => e.stopPropagation()}
+            />
+            <label 
+              htmlFor="sameAsSchoolAddressEdit" 
+              style={{ margin: 0, cursor: 'pointer', display: 'flex', flexDirection: 'column' }}
+            >
+              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: sameAsSchoolAddress ? '#1e40af' : '#1e293b' }}>
+                Residential Address is Same as School address
+              </span>
+              <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                Auto-fills Residence District, Mandal, and Village from School Address
+              </span>
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="district">Residence District</label>
+            <select id="district" name="district" className="form-control" value={formData.district} onChange={(e) => {
+              setSameAsSchoolAddress(false);
+              setFormData({...formData, district: e.target.value, mandal: '', village: ''});
+            }}>
+              <option value="">Select District</option>
+              {getByType('DISTRICT').map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+            </select>
+          </div>
+
+          {formData.district && (
+            <div className="form-group">
+              <label className="form-label" htmlFor="mandal">Residence Mandal</label>
+              <select id="mandal" name="mandal" className="form-control" value={formData.mandal} onChange={(e) => {
+                setSameAsSchoolAddress(false);
+                setFormData({...formData, mandal: e.target.value, village: ''});
+              }}>
+                <option value="">Select Mandal</option>
+                {getByParent('MANDAL', formData.district).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+          )}
+
+          {formData.mandal && (
+            <div className="form-group">
+              <label className="form-label" htmlFor="village">Residence Village</label>
+              <select id="village" name="village" className="form-control" value={formData.village} onChange={(e) => {
+                setSameAsSchoolAddress(false);
+                handleChange(e);
+              }}>
+                <option value="">Select Village</option>
+                {getByParent('VILLAGE', formData.mandal).map(c => <option key={c.id} value={c.id}>{c.value}</option>)}
+              </select>
+            </div>
+          )}
+
+          {formData.village && (
+            <div className="form-group">
+              <label className="form-label" htmlFor="address">Landmark</label>
+              <input type="text" id="address" name="address" className="form-control" value={formData.address} onChange={handleChange} placeholder="Enter landmark details" />
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="visitNumber">Visit No.</label>
+            <input type="text" id="visitNumber" name="visitNumber" className="form-control" value={formData.visitNumber} onChange={handleChange} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="studyInterestedAt">Study Interested At</label>
+            <select id="studyInterestedAt" name="studyInterestedAt" className="form-control" value={formData.studyInterestedAt} onChange={handleChange}>
+              <option value="">Select Interest</option>
+              {getByType('STUDY_INTEREST').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="educationStage">Current Education Stage</label>
+            <select id="educationStage" name="educationStage" className="form-control" value={formData.educationStage} onChange={handleChange}>
+              <option value="">Select option</option>
+              {getByType('EDUCATION_STAGE').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="ableToBearFee">Able to Bear Fee?</label>
+            <select id="ableToBearFee" name="ableToBearFee" className="form-control" value={formData.ableToBearFee} onChange={handleChange}>
+              <option value="">Select option</option>
+              {getByType('FEE_BEARABLE').map(c => <option key={c.id} value={c.value}>{c.value}</option>)}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="remarks">Remarks</label>
+            <textarea id="remarks" name="remarks" className="form-control" rows={3} value={formData.remarks} onChange={handleChange}></textarea>
+          </div>
+
+          <div className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1rem', marginBottom: '1rem' }}>
+            <input 
+              type="checkbox" 
+              id="doorstepCompleted" 
+              name="doorstepCompleted" 
+              checked={formData.doorstepCompleted} 
+              onChange={(e) => setFormData({...formData, doorstepCompleted: e.target.checked})} 
+              style={{ width: '1.2rem', height: '1.2rem' }}
+            />
+            <label className="form-label" htmlFor="doorstepCompleted" style={{ marginBottom: 0, cursor: 'pointer' }}>
+              Doorstep completed?
+            </label>
+          </div>
+
+          <div className="form-actions">
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              <Save size={20} /> {saving ? 'Updating...' : 'Update Student'}
+            </button>
+            
+            <button type="button" onClick={() => router.back()} className="btn btn-outline" style={{ border: 'none', color: 'var(--text-muted)' }}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {!loading && visits.length > 0 && (
+        <div className="card" style={{ marginTop: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Clock size={20} className="text-muted" /> Visit History
+          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {visits.map((v, i) => (
+              <div key={v.id} style={{ padding: '1rem', backgroundColor: 'var(--bg-color)', borderRadius: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                  <span style={{ fontWeight: 600 }}>Visit {visits.length - i}</span>
+                  <span className="text-muted">{new Date(v.visitDate).toLocaleDateString('en-GB')}</span>
+                </div>
+                <p style={{ margin: '0 0 0.5rem 0' }}>{v.remarks}</p>
+                {v.nextFollowUpType && v.nextFollowUpType !== 'Date' && (
+                  <div style={{ fontSize: '0.875rem', color: '#0ea5e9', fontWeight: 500 }}>
+                    Next follow-up: {v.nextFollowUpType}
+                  </div>
+                )}
+                {v.nextFollowUpType === 'Date' && v.nextFollowUpDate && (
+                  <div style={{ fontSize: '0.875rem', color: '#0ea5e9', fontWeight: 500 }}>
+                    Next follow-up: {new Date(v.nextFollowUpDate).toLocaleDateString('en-GB')}
+                  </div>
+                )}
+                {!v.nextFollowUpType && v.nextFollowUpDate && (
+                  <div style={{ fontSize: '0.875rem', color: '#0ea5e9', fontWeight: 500 }}>
+                    Next follow-up: {new Date(v.nextFollowUpDate).toLocaleDateString('en-GB')}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
