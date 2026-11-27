@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/session';
+import { getCollegeUser } from '@/lib/collegeCache';
+import { getCachedGeo } from '@/lib/geoCache';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,83 +16,83 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId || !currentUser.college) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
     }
 
     const { id } = await params;
+    const collegeId = currentUser.collegeId;
 
-    // Fetch the staff member
-    const member = await prisma.user.findFirst({
-      where: {
-        id,
-        collegeId: currentUser.collegeId,
-      },
-      select: {
-        id: true,
-        employeeId: true,
-        name: true,
-        role: true,
-        isActive: true,
-        assignedAgms: true,
-        assignedMandals: true,
-        assignedSchools: true,
-        createdAt: true,
-        _count: {
-          select: {
-            students: true,
-            visitsCreated: true,
+    // Concurrently fetch Geo, member, AGMs, college schools, and field staff in 1 parallel round-trip
+    const [geo, member, agmsList, schoolsRaw, fieldEmployees] = await Promise.all([
+      getCachedGeo(collegeId),
+      prisma.user.findFirst({
+        where: {
+          id,
+          collegeId,
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          role: true,
+          isActive: true,
+          assignedAgms: true,
+          assignedMandals: true,
+          assignedSchools: true,
+          academicYear: true,
+          admissionTarget: true,
+          dailyDoorstepTarget: true,
+          monthlyDoorstepTarget: true,
+          createdAt: true,
+          _count: {
+            select: {
+              students: true,
+              visitsCreated: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.user.findMany({
+        where: {
+          collegeId,
+          role: 'AGM',
+          isActive: true,
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+        },
+        orderBy: { name: 'asc' },
+      }),
+      prisma.configValue.findMany({
+        where: { type: 'SCHOOL', collegeId },
+        select: { id: true, value: true, parentId: true, strength: true, grade: true },
+        orderBy: { value: 'asc' },
+      }),
+      prisma.user.findMany({
+        where: {
+          collegeId,
+          role: 'EMPLOYEE',
+        },
+        select: {
+          id: true,
+          name: true,
+          employeeId: true,
+          isActive: true,
+          assignedMandals: true,
+          assignedSchools: true,
+        },
+      }),
+    ]);
 
     if (!member) {
       return NextResponse.json({ error: 'Staff member not found' }, { status: 404 });
     }
 
-    // Fetch AGMs in this college
-    const agmsList = await prisma.user.findMany({
-      where: {
-        collegeId: currentUser.collegeId,
-        role: 'AGM',
-        isActive: true,
-      },
-      select: {
-        id: true,
-        employeeId: true,
-        name: true,
-      },
-      orderBy: { name: 'asc' },
-    });
-
-    // Fetch Districts, Mandals, Villages, and Schools
-    const [districtsRaw, mandalsRaw, villagesRaw, schoolsRaw] = await Promise.all([
-      prisma.configValue.findMany({
-        where: { type: 'DISTRICT' },
-        select: { id: true, value: true },
-        orderBy: { value: 'asc' },
-      }),
-      prisma.configValue.findMany({
-        where: { type: 'MANDAL' },
-        select: { id: true, value: true, parentId: true },
-        orderBy: { value: 'asc' },
-      }),
-      prisma.configValue.findMany({
-        where: { type: 'VILLAGE' },
-        select: { id: true, value: true, parentId: true },
-      }),
-      prisma.configValue.findMany({
-        where: { type: 'SCHOOL', collegeId: currentUser.collegeId },
-        select: { id: true, value: true, parentId: true, strength: true, grade: true },
-        orderBy: { value: 'asc' },
-      }),
-    ]);
+    const { districts: districtsRaw, mandals: mandalsRaw, villages: villagesRaw } = geo;
 
     const districts = districtsRaw.map(d => ({
       id: d.id,
@@ -142,22 +144,6 @@ export async function GET(
       name: m.value,
       districtId: m.parentId,
     }));
-
-    // Build current school assignment map for this college
-    const fieldEmployees = await prisma.user.findMany({
-      where: {
-        collegeId: currentUser.collegeId,
-        role: 'EMPLOYEE',
-      },
-      select: {
-        id: true,
-        name: true,
-        employeeId: true,
-        isActive: true,
-        assignedMandals: true,
-        assignedSchools: true,
-      },
-    });
 
     const schoolAssignments: Record<string, { employeeId: string; employeeName: string; isActive: boolean }> = {};
     fieldEmployees.forEach(emp => {

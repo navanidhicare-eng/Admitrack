@@ -55,11 +55,26 @@ export default function CollegeSchoolsPage() {
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
+    // Instant 0ms hydration from cache
+    try {
+      const cached = sessionStorage.getItem('college_schools_data');
+      if (cached) {
+        const data = JSON.parse(cached);
+        setSchools(data.schools || []);
+        setMandals(data.mandals || []);
+        setVillages(data.villages || []);
+        setTotalCount(data.totalCount || 0);
+        setAssignedCount(data.assignedCount || 0);
+        setUnassignedCount(data.unassignedCount || 0);
+        setLoading(false);
+      }
+    } catch {}
+
     fetchSchools();
   }, []);
 
   const fetchSchools = async () => {
-    setLoading(true);
+    if (schools.length === 0) setLoading(true);
     try {
       const res = await fetch('/api/college/schools');
       if (res.ok) {
@@ -70,6 +85,9 @@ export default function CollegeSchoolsPage() {
         setTotalCount(data.totalCount || 0);
         setAssignedCount(data.assignedCount || 0);
         setUnassignedCount(data.unassignedCount || 0);
+        try {
+          sessionStorage.setItem('college_schools_data', JSON.stringify(data));
+        } catch {}
       }
     } catch (e) {
       console.error(e);

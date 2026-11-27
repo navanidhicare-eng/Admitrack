@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { GraduationCap, LogOut, Menu, X, Calendar, LayoutDashboard, Users, School, FileText } from 'lucide-react';
+import { GraduationCap, LogOut, Menu, X, Calendar, LayoutDashboard, Users, School, FileText, MapPin } from 'lucide-react';
 
 export default function CollegeSidebar() {
   const pathname = usePathname();
@@ -31,6 +31,7 @@ export default function CollegeSidebar() {
   const menuItems = [
     { name: 'Dashboard', path: '/college/dashboard', icon: LayoutDashboard },
     { name: 'Team / Staff', path: '/college/team', icon: Users },
+    { name: 'Locations', path: '/college/locations', icon: MapPin },
     { name: 'Schools', path: '/college/schools', icon: School },
     { name: 'Students', path: '/college/students', icon: GraduationCap },
     { name: 'Reports', path: '/college/reports', icon: FileText },

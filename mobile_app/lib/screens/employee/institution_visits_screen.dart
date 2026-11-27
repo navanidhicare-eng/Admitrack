@@ -565,123 +565,38 @@ class _InstitutionVisitsScreenState extends State<InstitutionVisitsScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Visit Date Picker
-                  InkWell(
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedVisitDate,
-                        firstDate: DateTime(2023),
-                        lastDate: DateTime(2030),
-                        helpText: 'SELECT DATE (PAST OR PRESENT)',
-                      );
-                      if (picked != null) {
-                        setSheetState(() => selectedVisitDate = picked);
-                      }
-                    },
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.calendar_month_rounded, color: Color(0xFF2563EB), size: 20),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('WORK / VISIT DATE (Supports Past Date)', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
-                                Text(
-                                  '${selectedVisitDate.day.toString().padLeft(2, '0')}/${selectedVisitDate.month.toString().padLeft(2, '0')}/${selectedVisitDate.year}',
-                                  style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
-                                ),
-                              ],
-                            ),
+                  // Visit Date (Locked to Today - Read Only)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_month_rounded, color: Color(0xFF2563EB), size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('WORK / VISIT DATE (Today)', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+                              Text(
+                                '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year}',
+                                style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
+                              ),
+                            ],
                           ),
-                          const Icon(Icons.edit_calendar_rounded, color: Color(0xFF94A3B8), size: 18),
-                        ],
-                      ),
+                        ),
+                        const Icon(Icons.lock_rounded, color: Color(0xFF94A3B8), size: 18),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 12),
 
-                  // Conditional Box: Quick Select for School/Tuition OR Category Chips for Other Duty
-                  if (selectedType == 'OTHER') ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFAF5FF),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFFE9D5FF)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.stars_rounded, color: Color(0xFF9333EA), size: 18),
-                              const SizedBox(width: 6),
-                              Text(
-                                'QUICK DUTY CATEGORY (Tap to auto-fill)',
-                                style: GoogleFonts.outfit(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w800,
-                                  color: const Color(0xFF9333EA),
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: [
-                              '📞 Phone Follow-up (WFH / Rain)',
-                              '🏢 Office Work / Desk Duty',
-                              '🏛️ College / Campus Duty',
-                              '📢 Canvassing / Pamphlets',
-                              '👥 Parent / Student Meeting',
-                              '📝 Review Meeting / Training',
-                              '✏️ Other Special Work',
-                            ].map((cat) {
-                              final cleanCat = cat.replaceFirst(RegExp(r'^[^\s]+\s'), '');
-                              final isSelected = contactCtrl.text == cleanCat || nameCtrl.text.contains(cleanCat);
-                              return ActionChip(
-                                label: Text(cat, style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)),
-                                backgroundColor: isSelected ? const Color(0xFF9333EA) : Colors.white,
-                                labelStyle: TextStyle(color: isSelected ? Colors.white : const Color(0xFF6B21A8)),
-                                side: const BorderSide(color: Color(0xFFD8B4FE)),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                onPressed: () {
-                                  setSheetState(() {
-                                    contactCtrl.text = cleanCat;
-                                    if (nameCtrl.text.isEmpty || [
-                                      'Phone Follow-up (WFH / Rain)',
-                                      'Office Work / Desk Duty',
-                                      'College / Campus Duty',
-                                      'Canvassing / Pamphlets',
-                                      'Parent / Student Meeting',
-                                      'Review Meeting / Training',
-                                      'Other Special Work'
-                                    ].any((k) => nameCtrl.text.contains(k))) {
-                                      nameCtrl.text = cleanCat;
-                                    }
-                                  });
-                                },
-                              );
-                            }).toList(),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ] else ...[
-                    // Smart Quick Select & Auto-Fill Box for SCHOOL and TUITION
+                  // Smart Quick Select & Auto-Fill Box for SCHOOL and TUITION
+                  if (selectedType != 'OTHER') ...[
                     Container(
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(

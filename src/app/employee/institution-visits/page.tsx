@@ -1098,80 +1098,24 @@ export default function InstitutionVisitsPage() {
                 <input
                   type="date"
                   required
+                  readOnly
+                  disabled
                   value={formData.visitDate}
-                  onChange={e => setFormData({ ...formData, visitDate: e.target.value })}
                   style={{
                     width: '100%',
-                    backgroundColor: '#0f172a',
+                    backgroundColor: '#1e293b',
                     border: '1px solid #334155',
-                    color: '#f8fafc',
+                    color: '#94a3b8',
                     borderRadius: '8px',
                     padding: '0.6rem 0.75rem',
                     fontSize: '0.85rem',
+                    cursor: 'not-allowed',
                   }}
                 />
               </div>
 
-              {/* Other Duty Presets OR Smart Auto-fill Section */}
-              {formData.type === 'OTHER' ? (
-                <div style={{
-                  backgroundColor: 'rgba(168, 85, 247, 0.08)',
-                  border: '1px solid rgba(168, 85, 247, 0.25)',
-                  borderRadius: '12px',
-                  padding: '0.85rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.6rem',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#c084fc', letterSpacing: '0.04em' }}>
-                      💼 QUICK DUTY CATEGORY
-                    </span>
-                    <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>Tap to select</span>
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                    {[
-                      '📞 Phone Follow-up (WFH / Rain)',
-                      '🏢 Office Work / Desk Duty',
-                      '🏛️ College / Campus Duty',
-                      '📢 Canvassing / Pamphlets',
-                      '👥 Parent / Student Meeting',
-                      '📝 Review Meeting / Training',
-                      '✏️ Other Special Work'
-                    ].map(preset => (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => {
-                          const catName = preset.replace(/^[^ws]+/, '').trim();
-                          setFormData(prev => ({
-                            ...prev,
-                            name: preset,
-                            contactPerson: prev.contactPerson || catName,
-                          }));
-                        }}
-                        style={{
-                          fontSize: '0.75rem',
-                          padding: '0.35rem 0.65rem',
-                          borderRadius: '8px',
-                          border: formData.name.startsWith(preset.substring(0, 10))
-                            ? '1px solid #c084fc'
-                            : '1px solid #334155',
-                          backgroundColor: formData.name.startsWith(preset.substring(0, 10))
-                            ? 'rgba(168, 85, 247, 0.25)'
-                            : '#0f172a',
-                          color: formData.name.startsWith(preset.substring(0, 10))
-                            ? '#f3e8ff'
-                            : '#cbd5e1',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {preset}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : (
+              {/* Smart Auto-fill Section for School & Tuition */}
+              {formData.type !== 'OTHER' && (
                 <div style={{
                   backgroundColor: 'rgba(30, 41, 59, 0.7)',
                   border: '1px solid rgba(59, 130, 246, 0.3)',

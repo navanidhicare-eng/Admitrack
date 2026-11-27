@@ -23,12 +23,14 @@ import {
   X,
   Sparkles,
   FileText,
-  Star
+  Star,
+  AlertCircle
 } from 'lucide-react';
 
 export default function CollegeDashboard() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [lastRefreshed, setLastRefreshed] = useState<string>('');
 
@@ -76,27 +78,87 @@ export default function CollegeDashboard() {
   const [hoveredDay, setHoveredDay] = useState<any | null>(null);
 
   useEffect(() => {
+    // 1. Immediately hydrate from client-side sessionStorage for instant 0ms load!
+    try {
+      const cached = sessionStorage.getItem('college_dashboard_data');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        setData(parsed);
+        setLoading(false);
+        setLastRefreshed('(Cached)');
+      }
+    } catch {}
+
     fetchDashboardStats();
   }, []);
 
-  const fetchDashboardStats = async () => {
-    setLoading(true);
+  const fetchDashboardStats = async (isRetry = false) => {
+    if (!data) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     setError('');
     try {
       const res = await fetch('/api/college/dashboard/stats');
       if (!res.ok) {
-        throw new Error('Failed to load dashboard data');
+        if (!isRetry) {
+          // Auto retry once after 1.5s for cold database connections
+          await new Promise(r => setTimeout(r, 1500));
+          return fetchDashboardStats(true);
+        }
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || 'Failed to load dashboard data');
       }
       const json = await res.json();
       setData(json);
+      try {
+        sessionStorage.setItem('college_dashboard_data', JSON.stringify(json));
+      } catch {}
       setLastRefreshed(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (e: any) {
       console.error(e);
-      setError('Could not load dashboard statistics. Please refresh.');
+      if (!data) {
+        setError('Could not load dashboard statistics. Please click Retry.');
+      }
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
+
+  if (error && !data) {
+    return (
+      <div style={{ maxWidth: '600px', margin: '4rem auto', textAlign: 'center', padding: '2.5rem 2rem', background: '#fff', borderRadius: '16px', border: '1px solid #fee2e2', boxShadow: '0 4px 20px rgba(0,0,0,0.05)' }}>
+        <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: '#fee2e2', color: '#dc2626', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.25rem auto' }}>
+          <AlertCircle size={32} />
+        </div>
+        <h2 style={{ fontSize: '1.35rem', fontWeight: 800, color: '#0F2B47', margin: '0 0 0.5rem 0' }}>Unable to load dashboard</h2>
+        <p style={{ color: '#64748b', fontSize: '0.92rem', marginBottom: '1.75rem', lineHeight: 1.5 }}>
+          The database server took too long to respond on initial connection. Please click retry below.
+        </p>
+        <button
+          onClick={() => fetchDashboardStats(false)}
+          style={{
+            padding: '0.75rem 1.75rem',
+            backgroundColor: '#047857',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '10px',
+            fontWeight: 700,
+            fontSize: '0.95rem',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            boxShadow: '0 4px 12px rgba(4, 120, 87, 0.25)',
+          }}
+        >
+          <RefreshCw size={18} /> Retry Now
+        </button>
+      </div>
+    );
+  }
 
   if (loading && !data) {
     return (
@@ -188,14 +250,19 @@ export default function CollegeDashboard() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          {lastRefreshed && (
+          {refreshing && (
+            <span style={{ fontSize: '0.8rem', color: '#047857', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+              <RefreshCw size={12} className="spin-animation" /> Syncing...
+            </span>
+          )}
+          {lastRefreshed && !refreshing && (
             <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
               Refreshed at {lastRefreshed}
             </span>
           )}
           <button
-            onClick={fetchDashboardStats}
-            disabled={loading}
+            onClick={() => fetchDashboardStats(false)}
+            disabled={loading || refreshing}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -207,11 +274,11 @@ export default function CollegeDashboard() {
               borderRadius: '10px',
               fontSize: '0.85rem',
               fontWeight: 600,
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: (loading || refreshing) ? 'not-allowed' : 'pointer',
               transition: 'all 0.15s ease',
             }}
           >
-            <RefreshCw size={15} className={loading ? 'spin-animation' : ''} />
+            <RefreshCw size={15} className={(loading || refreshing) ? 'spin-animation' : ''} />
             Refresh
           </button>
         </div>

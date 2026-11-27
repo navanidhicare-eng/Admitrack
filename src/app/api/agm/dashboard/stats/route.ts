@@ -4,6 +4,17 @@ import { getSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
+const agmStatsCache = new Map<string, { timestamp: number; payload: any }>();
+const CACHE_TTL_MS = 45 * 1000; // 45 seconds
+
+export function invalidateAgmStatsCache(employeeId?: string) {
+  if (employeeId) {
+    agmStatsCache.delete(employeeId);
+  } else {
+    agmStatsCache.clear();
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const session = await getSession(req);
@@ -11,17 +22,42 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized. AGM access only.' }, { status: 401 });
     }
 
-    // 1. Fetch current AGM profile
-    const agmUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+    if (!forceRefresh) {
+      const cached = agmStatsCache.get(session.employeeId);
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+        return NextResponse.json(cached.payload);
+      }
+    }
+
+    // 1. Fetch current AGM profile and configs in parallel
+    const [agmUser, configs] = await Promise.all([
+      prisma.user.findUnique({
+        where: { employeeId: session.employeeId },
+        include: { college: true },
+      }),
+      prisma.configValue.findMany({
+        where: {
+          type: { in: ['SCHOOL', 'MANDAL', 'VILLAGE', 'DISTRICT'] },
+        },
+        select: {
+          id: true,
+          type: true,
+          value: true,
+          strength: true,
+          parentId: true,
+          headmasterName: true,
+          headmasterPhone: true,
+          grade: true,
+        },
+      }),
+    ]);
 
     if (!agmUser) {
       return NextResponse.json({ error: 'AGM user profile not found.' }, { status: 404 });
     }
 
-    // 2. Fetch all staff members assigned under this AGM (Field Staff and Telecallers)
+    // 2. Fetch staff members assigned under this AGM
     const staffMembers = await prisma.user.findMany({
       where: {
         assignedAgms: { has: agmUser.employeeId },
@@ -42,81 +78,64 @@ export async function GET(req: NextRequest) {
     const staffIds = staffMembers.map(s => s.employeeId);
     const allRelevantStaffIds = [...staffIds, agmUser.employeeId];
 
-    // 3. Fetch all students under this team
-    const teamStudents = await prisma.student.findMany({
-      where: {
-        employeeId: { in: allRelevantStaffIds },
-      },
-      select: {
-        id: true,
-        employeeId: true,
-        studentName: true,
-        fatherName: true,
-        occupation: true,
-        address: true,
-        phone: true,
-        whatsapp: true,
-        schoolName: true,
-        district: true,
-        mandal: true,
-        village: true,
-        marks: true,
-        group: true,
-        remarks: true,
-        leadStatus: true,
-        doorstepCompleted: true,
-        studyInterestedAt: true,
-        visitNumber: true,
-        createdAt: true,
-        visits: {
-          take: 1,
-          orderBy: { visitDate: 'desc' },
-          select: {
-            visitDate: true,
-            remarks: true,
+    // 3. Concurrently fetch students and visits
+    const [teamStudents, teamVisits] = await Promise.all([
+      prisma.student.findMany({
+        where: {
+          employeeId: { in: allRelevantStaffIds },
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          studentName: true,
+          fatherName: true,
+          occupation: true,
+          address: true,
+          phone: true,
+          whatsapp: true,
+          schoolName: true,
+          district: true,
+          mandal: true,
+          village: true,
+          marks: true,
+          group: true,
+          remarks: true,
+          leadStatus: true,
+          doorstepCompleted: true,
+          studyInterestedAt: true,
+          visitNumber: true,
+          createdAt: true,
+          visits: {
+            take: 1,
+            orderBy: { visitDate: 'desc' },
+            select: {
+              visitDate: true,
+              remarks: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.visit.findMany({
+        where: {
+          OR: [
+            { addedById: { in: allRelevantStaffIds } },
+            { student: { employeeId: { in: allRelevantStaffIds } } },
+          ],
+        },
+        select: {
+          id: true,
+          studentId: true,
+          addedById: true,
+          visitDate: true,
+          remarks: true,
+          createdAt: true,
+        },
+        orderBy: { visitDate: 'desc' },
+      }),
+    ]);
 
-    // 4. Fetch all visits for activity tracking
-    const studentIds = teamStudents.map(s => s.id);
     const studentMap = new Map(teamStudents.map(s => [s.id, s]));
-    const teamVisits = await prisma.visit.findMany({
-      where: {
-        OR: [
-          { addedById: { in: allRelevantStaffIds } },
-          { studentId: { in: studentIds } },
-        ],
-      },
-      select: {
-        id: true,
-        studentId: true,
-        addedById: true,
-        visitDate: true,
-        remarks: true,
-        createdAt: true,
-      },
-      orderBy: { visitDate: 'desc' },
-    });
-
-    // 5. Fetch Config values for school & mandal hierarchy mapping
-    const configs = await prisma.configValue.findMany({
-      where: {
-        type: { in: ['SCHOOL', 'MANDAL', 'VILLAGE', 'DISTRICT'] },
-      },
-      select: {
-        id: true,
-        type: true,
-        value: true,
-        strength: true,
-        parentId: true,
-        headmasterName: true,
-        headmasterPhone: true,
-        grade: true,
-      },
-    });
 
     const configMap: Record<string, string> = {};
     const schoolStrengthMap: Record<string, number> = {};
@@ -471,7 +490,7 @@ export async function GET(req: NextRequest) {
     }
     recentVisits.sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime());
 
-    return NextResponse.json({
+    const payload = {
       agm: {
         id: agmUser.id,
         name: agmUser.name,
@@ -495,7 +514,14 @@ export async function GET(req: NextRequest) {
       staffStats,
       recentVisits: recentVisits.slice(0, 15),
       catchmentSchools,
+    };
+
+    agmStatsCache.set(session.employeeId, {
+      timestamp: Date.now(),
+      payload,
     });
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error('Error fetching AGM dashboard stats:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

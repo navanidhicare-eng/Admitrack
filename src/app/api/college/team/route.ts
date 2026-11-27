@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/session';
+import { getCollegeUser } from '@/lib/collegeCache';
 import bcrypt from 'bcryptjs';
+
+export const dynamic = 'force-dynamic';
+
+const teamCache = new Map<string, { timestamp: number; data: any }>();
+const TEAM_CACHE_TTL_MS = 25 * 1000; // 25 seconds
 
 // GET all team members, quotas, and list of AGMs
 export async function GET(req: NextRequest) {
@@ -11,49 +17,58 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get current college admin user from DB
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId || !currentUser.college) {
       return NextResponse.json({ error: 'College profile not found' }, { status: 404 });
     }
 
     const college = currentUser.college;
 
-    // Get all team members created under this college
-    const team = await prisma.user.findMany({
-      where: {
-        collegeId: college.id,
-        id: { not: currentUser.id }, // exclude primary college admin
-      },
-      select: {
-        id: true,
-        employeeId: true,
-        name: true,
-        role: true,
-        isActive: true,
-        assignedAgms: true,
-        assignedMandals: true,
-        assignedSchools: true,
-        createdAt: true,
-        _count: {
-          select: {
-            students: true,
-            visitsCreated: true,
+    // Check cache
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+    if (!forceRefresh) {
+      const cached = teamCache.get(college.id);
+      if (cached && Date.now() - cached.timestamp < TEAM_CACHE_TTL_MS) {
+        return NextResponse.json(cached.data);
+      }
+    }
+
+    // Fetch team members and valid college schools concurrently in parallel
+    const [team, collegeSchools] = await Promise.all([
+      prisma.user.findMany({
+        where: {
+          collegeId: college.id,
+          id: { not: currentUser.id }, // exclude primary college admin
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          role: true,
+          isActive: true,
+          assignedAgms: true,
+          assignedMandals: true,
+          assignedSchools: true,
+          academicYear: true,
+          admissionTarget: true,
+          dailyDoorstepTarget: true,
+          monthlyDoorstepTarget: true,
+          createdAt: true,
+          _count: {
+            select: {
+              students: true,
+              visitsCreated: true,
+            },
           },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.configValue.findMany({
+        where: { type: 'SCHOOL', collegeId: college.id },
+        select: { id: true },
+      }),
+    ]);
 
-    // Fetch valid school IDs created by this specific college
-    const collegeSchools = await prisma.configValue.findMany({
-      where: { type: 'SCHOOL', collegeId: college.id },
-      select: { id: true },
-    });
     const validCollegeSchoolSet = new Set(collegeSchools.map(s => s.id));
 
     // Sanitize team so assignedSchools strictly contains only this college's schools
@@ -64,13 +79,19 @@ export async function GET(req: NextRequest) {
 
     const agmsList = sanitizedTeam
       .filter(u => u.role === 'AGM')
-      .map(u => ({ id: u.id, employeeId: u.employeeId, name: u.name }));
+      .map(u => ({
+        id: u.id,
+        employeeId: u.employeeId,
+        name: u.name,
+        academicYear: u.academicYear,
+        admissionTarget: u.admissionTarget,
+      }));
 
     const agmsCount = agmsList.length;
     const telecallersCount = sanitizedTeam.filter(u => u.role === 'TELECALLER').length;
     const employeesCount = sanitizedTeam.filter(u => u.role === 'EMPLOYEE').length;
 
-    return NextResponse.json({
+    const responsePayload = {
       college: {
         id: college.id,
         name: college.name,
@@ -86,7 +107,11 @@ export async function GET(req: NextRequest) {
       },
       agms: agmsList,
       team: sanitizedTeam,
-    });
+    };
+
+    teamCache.set(college.id, { timestamp: Date.now(), data: responsePayload });
+
+    return NextResponse.json(responsePayload);
   } catch (error) {
     console.error('Error fetching college team:', error);
     return NextResponse.json({ error: 'Failed to fetch team members' }, { status: 500 });
@@ -101,11 +126,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId || !currentUser.college) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
     }
@@ -120,7 +141,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { name, employeeId, password, role, assignedAgms, assignedMandals, assignedSchools } = body;
+    const { name, employeeId, password, role, assignedAgms, assignedMandals, assignedSchools, academicYear, admissionTarget, dailyDoorstepTarget, monthlyDoorstepTarget } = body;
 
     if (!name || !employeeId || !password || !role) {
       return NextResponse.json(
@@ -213,17 +234,21 @@ export async function POST(req: NextRequest) {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newMember = await prisma.user.create({
+    const newUser = await prisma.user.create({
       data: {
-        employeeId: cleanUsername,
         name: name.trim(),
+        employeeId: cleanUsername,
         password: hashedPassword,
-        role: role,
+        role: role as any,
         collegeId: college.id,
+        isActive: true,
         assignedAgms: (role === 'TELECALLER' || role === 'EMPLOYEE') && Array.isArray(assignedAgms) ? assignedAgms : [],
         assignedMandals: initialMandals,
         assignedSchools: initialSchools,
-        isActive: true,
+        academicYear: role === 'AGM' && academicYear ? String(academicYear).trim() : null,
+        admissionTarget: admissionTarget !== undefined && admissionTarget !== null && admissionTarget !== '' ? parseInt(String(admissionTarget), 10) : null,
+        dailyDoorstepTarget: role !== 'AGM' && dailyDoorstepTarget !== undefined && dailyDoorstepTarget !== null && dailyDoorstepTarget !== '' ? parseInt(String(dailyDoorstepTarget), 10) : null,
+        monthlyDoorstepTarget: role !== 'AGM' && monthlyDoorstepTarget !== undefined && monthlyDoorstepTarget !== null && monthlyDoorstepTarget !== '' ? parseInt(String(monthlyDoorstepTarget), 10) : null,
       },
       select: {
         id: true,
@@ -234,18 +259,25 @@ export async function POST(req: NextRequest) {
         assignedAgms: true,
         assignedMandals: true,
         assignedSchools: true,
+        academicYear: true,
+        admissionTarget: true,
+        dailyDoorstepTarget: true,
+        monthlyDoorstepTarget: true,
         createdAt: true,
       },
     });
 
-    return NextResponse.json(newMember, { status: 201 });
+    // Invalidate cache
+    teamCache.delete(college.id);
+
+    return NextResponse.json(newUser, { status: 201 });
   } catch (error) {
-    console.error('Error creating college team member:', error);
+    console.error('Error creating team member:', error);
     return NextResponse.json({ error: 'Failed to create team member' }, { status: 500 });
   }
 }
 
-// PUT update team member, assigned AGMs, locations, or reset password
+// PUT update existing team member
 export async function PUT(req: NextRequest) {
   try {
     const session = await getSession(req);
@@ -253,16 +285,13 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
     }
 
     const body = await req.json();
-    const { id, name, isActive, newPassword, assignedAgms, assignedMandals, assignedSchools } = body;
+    const { id, name, isActive, newPassword, assignedAgms, assignedMandals, assignedSchools, academicYear, admissionTarget, dailyDoorstepTarget, monthlyDoorstepTarget } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'Member ID is required' }, { status: 400 });
@@ -280,6 +309,18 @@ export async function PUT(req: NextRequest) {
     const updateData: any = {};
     if (name !== undefined) updateData.name = name.trim();
     if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+    if (academicYear !== undefined) {
+      updateData.academicYear = academicYear ? String(academicYear).trim() : null;
+    }
+    if (admissionTarget !== undefined) {
+      updateData.admissionTarget = admissionTarget !== null && admissionTarget !== '' ? parseInt(String(admissionTarget), 10) : null;
+    }
+    if (dailyDoorstepTarget !== undefined) {
+      updateData.dailyDoorstepTarget = dailyDoorstepTarget !== null && dailyDoorstepTarget !== '' ? parseInt(String(dailyDoorstepTarget), 10) : null;
+    }
+    if (monthlyDoorstepTarget !== undefined) {
+      updateData.monthlyDoorstepTarget = monthlyDoorstepTarget !== null && monthlyDoorstepTarget !== '' ? parseInt(String(monthlyDoorstepTarget), 10) : null;
+    }
     if (assignedAgms !== undefined) {
       updateData.assignedAgms = Array.isArray(assignedAgms) ? assignedAgms : [];
     }
@@ -337,8 +378,15 @@ export async function PUT(req: NextRequest) {
         assignedAgms: true,
         assignedMandals: true,
         assignedSchools: true,
+        academicYear: true,
+        admissionTarget: true,
+        dailyDoorstepTarget: true,
+        monthlyDoorstepTarget: true,
       },
     });
+
+    // Invalidate cache
+    teamCache.delete(currentUser.collegeId);
 
     return NextResponse.json(updated);
   } catch (error) {

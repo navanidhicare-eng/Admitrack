@@ -3,9 +3,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Phone, MessageCircle, Search, PlusCircle, MapPin, Calendar, Edit } from 'lucide-react';
-import { Capacitor } from '@capacitor/core';
-import { Share } from '@capacitor/share';
-import { Filesystem, Directory } from '@capacitor/filesystem';
 
 type Visit = {
   id: string;
@@ -152,18 +149,7 @@ export default function VillageVisits() {
         if (visitRemarks) {
             text += `\n*Remarks:* ${visitRemarks}`;
         }
-        if (Capacitor.isNativePlatform()) {
-            try {
-                await Share.share({
-                    text: text,
-                    dialogTitle: 'Share to WhatsApp'
-                });
-                closeVisitModal();
-            } catch (error) {
-                console.error('Error sharing native', error);
-                window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-            }
-        } else if (navigator.share) {
+        if (navigator.share) {
             try { 
                 await navigator.share({ text }); 
                 closeVisitModal();
@@ -266,43 +252,20 @@ export default function VillageVisits() {
 
         URL.revokeObjectURL(objectUrl);
         
-        if (Capacitor.isNativePlatform()) {
-            const reader = new FileReader();
-            reader.readAsDataURL(blob);
-            reader.onloadend = async () => {
-                const base64data = (reader.result as string).split(',')[1];
-                const filename = `visit_report_${Date.now()}.jpg`;
-                
-                try {
-                    const fileResult = await Filesystem.writeFile({
-                        path: filename,
-                        data: base64data,
-                        directory: Directory.Cache
-                    });
-                    
-                    await Share.share({
-                        title: 'Visit Report',
-                        url: fileResult.uri,
-                        dialogTitle: 'Share to WhatsApp'
-                    });
-                    closeVisitModal();
-                } catch (err) {
-                    console.error('Capacitor Share Error:', err);
-                    alert('Sharing failed.');
-                }
-            };
-        } else {
-            const watermarkedFile = new File([blob], 'visit_report.jpg', { type: 'image/jpeg' });
-            if (navigator.share && navigator.canShare && navigator.canShare({ files: [watermarkedFile] })) {
-                try {
-                    await navigator.share({ files: [watermarkedFile] });
-                    closeVisitModal();
-                } catch (error) {
-                    console.error('Error sharing', error);
-                }
-            } else {
-                alert('Sharing files is not supported on this device/browser.');
+        const watermarkedFile = new File([blob], 'visit_report.jpg', { type: 'image/jpeg' });
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [watermarkedFile] })) {
+            try {
+                await navigator.share({ files: [watermarkedFile] });
+                closeVisitModal();
+            } catch (error) {
+                console.error('Error sharing', error);
             }
+        } else {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'visit_report.jpg';
+            a.click();
+            closeVisitModal();
         }
     } catch (e) {
         console.error(e);

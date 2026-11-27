@@ -1,5 +1,4 @@
 const http = require('http');
-const https = require('https');
 const url = require('url');
 const path = require('path');
 const dotenv = require('dotenv');
@@ -10,11 +9,12 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 const { PrismaClient } = require(path.resolve(__dirname, '../node_modules/@prisma/client'));
 const prisma = new PrismaClient();
 
-const TARGET_HOST = 'sri.uniknaturals.in';
+const TARGET_HOST = '127.0.0.1';
+const TARGET_PORT = 3000;
 const PORT = 5000;
 
-// High-performance keepAlive agent to reuse TLS sockets and eliminate handshake latency
-const httpsAgent = new https.Agent({
+// High-performance keepAlive agent to reuse sockets
+const httpAgent = new http.Agent({
   keepAlive: true,
   maxSockets: 50,
   keepAliveMsecs: 60000,
@@ -442,13 +442,13 @@ const server = http.createServer((req, res) => {
 
             // Forward to upstream in background (fire-and-forget for other audits/webhooks)
             try {
-              const fReq = https.request({
+              const fReq = http.request({
                 hostname: TARGET_HOST,
-                port: 443,
+                port: TARGET_PORT,
                 path: req.url,
                 method: req.method,
                 headers: { ...forwardHeaders, 'content-length': Buffer.byteLength(rawBody) },
-                agent: httpsAgent,
+                agent: httpAgent,
               });
               fReq.on('error', () => {});
               fReq.write(rawBody);
@@ -489,7 +489,6 @@ const server = http.createServer((req, res) => {
             visits: true,
             collegeBranch: { select: { id: true, name: true, code: true, location: true } },
             joinedCollege: { select: { id: true, name: true } },
-            assessmentReport: true,
           }
         });
         if (student) {
@@ -515,17 +514,18 @@ const server = http.createServer((req, res) => {
     // ==========================================
     const options = {
       hostname: TARGET_HOST,
-      port: 443,
+      port: TARGET_PORT,
       path: req.url,
       method: req.method,
       headers: {
         ...forwardHeaders,
+        host: `${TARGET_HOST}:${TARGET_PORT}`,
         ...(rawBody.length > 0 ? { 'content-length': Buffer.byteLength(rawBody) } : {}),
       },
-      agent: httpsAgent,
+      agent: httpAgent,
     };
 
-    const proxyReq = https.request(options, (proxyRes) => {
+    const proxyReq = http.request(options, (proxyRes) => {
       // Augment GET /api/students list with DB photos and college branches
       const isStudentsList = req.method === 'GET' && parsedUrl.pathname === '/api/students';
 
@@ -730,5 +730,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`PRO Mobile Dev Proxy running at http://127.0.0.1:${PORT} -> https://${TARGET_HOST} (College Branches & Direct DB Enabled)`);
+  console.log(`PRO Mobile Dev Proxy running at http://127.0.0.1:${PORT} -> http://${TARGET_HOST}:${TARGET_PORT} (Local Dev & Direct DB Enabled)`);
 });

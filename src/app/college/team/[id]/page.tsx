@@ -19,7 +19,9 @@ import {
   AlertCircle,
   CheckCircle2,
   KeyRound,
-  Plus
+  Plus,
+  Target,
+  Calendar
 } from 'lucide-react';
 
 export default function EditStaffMemberPage({
@@ -43,6 +45,10 @@ export default function EditStaffMemberPage({
   const [newPassword, setNewPassword] = useState('');
   const [assignedAgms, setAssignedAgms] = useState<string[]>([]);
   const [selectedSchools, setSelectedSchools] = useState<string[]>([]);
+  const [academicYear, setAcademicYear] = useState('');
+  const [admissionTarget, setAdmissionTarget] = useState<number | ''>('');
+  const [dailyDoorstepTarget, setDailyDoorstepTarget] = useState<number | ''>('');
+  const [monthlyDoorstepTarget, setMonthlyDoorstepTarget] = useState<number | ''>('');
 
   // Metadata
   const [agms, setAgms] = useState<any[]>([]);
@@ -78,6 +84,10 @@ export default function EditStaffMemberPage({
       setIsActive(data.member.isActive ?? true);
       setAssignedAgms(data.member.assignedAgms || []);
       setSelectedSchools(data.member.assignedSchools || []);
+      setAcademicYear(data.member.academicYear || '');
+      setAdmissionTarget(data.member.admissionTarget ?? '');
+      setDailyDoorstepTarget(data.member.dailyDoorstepTarget ?? '');
+      setMonthlyDoorstepTarget(data.member.monthlyDoorstepTarget ?? '');
 
       setAgms(data.agms || []);
       setDistricts(data.districts || []);
@@ -118,6 +128,15 @@ export default function EditStaffMemberPage({
         payload.newPassword = newPassword.trim();
       }
 
+      if (member.role === 'AGM') {
+        payload.academicYear = academicYear.trim();
+        payload.admissionTarget = admissionTarget !== '' ? Number(admissionTarget) : null;
+      } else {
+        payload.admissionTarget = admissionTarget !== '' ? Number(admissionTarget) : null;
+        payload.dailyDoorstepTarget = dailyDoorstepTarget !== '' ? Number(dailyDoorstepTarget) : null;
+        payload.monthlyDoorstepTarget = monthlyDoorstepTarget !== '' ? Number(monthlyDoorstepTarget) : null;
+      }
+
       if (member.role === 'EMPLOYEE') {
         payload.assignedSchools = selectedSchools;
         // Derive mandals directly from assigned schools to keep data clean
@@ -143,6 +162,9 @@ export default function EditStaffMemberPage({
         setError(resData.error || 'Failed to save staff changes');
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } else {
+        try {
+          sessionStorage.removeItem('college_team_data');
+        } catch {}
         setSuccess('All changes saved successfully! Returning to team list...');
         setTimeout(() => {
           router.push('/college/team');
@@ -359,11 +381,113 @@ export default function EditStaffMemberPage({
           </div>
         </div>
 
-        {/* Card 2: Reporting Hierarchy (AGMs) */}
+        {/* Card 2: Academic Planning & Admission Target (Only for AGM) */}
+        {isAgm && (
+          <div className="card" style={{ padding: '1.5rem' }}>
+            <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.15rem', fontWeight: 700, color: '#0F2B47', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Target size={20} color="#047857" /> 2. Academic Year & Admission Target
+            </h2>
+            <p style={{ margin: '0 0 1.25rem 0', fontSize: '0.85rem', color: '#64748b' }}>
+              Configure the academic session and target number of admissions assigned to this AGM.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1.25rem' }}>
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Calendar size={16} color="#047857" /> Academic Year
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="e.g. 2026-2027"
+                  value={academicYear}
+                  onChange={e => setAcademicYear(e.target.value)}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Academic batch or session (e.g. 2026-2027)</span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Target size={16} color="#047857" /> Admission Target
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="form-control"
+                  placeholder="e.g. 100"
+                  value={admissionTarget}
+                  onChange={e => setAdmissionTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Target number of student admissions</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Card: Staff Performance Targets (Daily Doorsteps, Monthly Doorsteps, Total Admissions) */}
+        {(isFieldStaff || isTelecaller) && (
+          <div className="card" style={{ padding: '1.5rem' }}>
+            <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.15rem', fontWeight: 700, color: '#0F2B47', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Target size={20} color="#047857" /> 2. Work Targets & Goals
+            </h2>
+            <p style={{ margin: '0 0 1.25rem 0', fontSize: '0.85rem', color: '#64748b' }}>
+              Assign daily/monthly doorstep visit targets and total admissions goal for this staff member.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#0F2B47' }}>
+                  🚪 Daily Doorsteps Target
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="form-control"
+                  placeholder="e.g. 10"
+                  value={dailyDoorstepTarget}
+                  onChange={e => setDailyDoorstepTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Target number of doorstep visits per day</span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#0F2B47' }}>
+                  📅 Monthly Doorsteps Target
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="form-control"
+                  placeholder="e.g. 250"
+                  value={monthlyDoorstepTarget}
+                  onChange={e => setMonthlyDoorstepTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Target number of doorstep visits per month</span>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#0F2B47' }}>
+                  🎯 Total Admissions Target
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="form-control"
+                  placeholder="e.g. 50"
+                  value={admissionTarget}
+                  onChange={e => setAdmissionTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                />
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Total target admissions to achieve</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Card 3: Reporting Hierarchy (AGMs) */}
         {(isTelecaller || isFieldStaff) && (
           <div className="card" style={{ padding: '1.5rem' }}>
             <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.15rem', fontWeight: 700, color: '#0F2B47', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <ShieldCheck size={20} color="#f59e0b" /> 2. Reporting AGM Hierarchy
+              <ShieldCheck size={20} color="#f59e0b" /> 3. Reporting AGM Hierarchy
             </h2>
             <p style={{ margin: '0 0 1rem 0', fontSize: '0.85rem', color: '#64748b' }}>
               {isTelecaller
@@ -432,13 +556,13 @@ export default function EditStaffMemberPage({
           </div>
         )}
 
-        {/* Card 3: Schools Assignment (Only for Field Staff) */}
+        {/* Card 4: Schools Assignment (Only for Field Staff) */}
         {isFieldStaff && (
           <div className="card" style={{ padding: '1.5rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, color: '#0F2B47', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <School size={22} color="#047857" /> 3. Assign Catchment Schools
+                  <School size={22} color="#047857" /> 4. Assign Catchment Schools
                 </h2>
                 <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.9rem', color: '#64748b' }}>
                   Select <strong>District</strong> and <strong>Mandal</strong> below to view high schools and assign them to this employee. Schools are <strong>strictly exclusive (1 staff per school)</strong>.

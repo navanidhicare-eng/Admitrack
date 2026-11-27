@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Users, MapPin, Users2, GraduationCap, Activity, ClipboardList, LogOut, Menu, X, BookOpen, UserCheck, HelpCircle, Award, Building2 } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, LogOut, Menu, X } from 'lucide-react';
 
 export default function AdminSidebar() {
   const pathname = usePathname();
@@ -18,19 +18,8 @@ export default function AdminSidebar() {
 
   const menuItems = [
     { name: 'Dashboard', path: '/admin', icon: LayoutDashboard },
-    { name: 'Pending Approvals', path: '/admin/pending-students', icon: UserCheck },
-    { name: 'Students', path: '/admin/students', icon: BookOpen },
-    { name: 'Study Books', path: '/admin/books', icon: BookOpen },
-    { name: 'Study Videos', path: '/admin/videos', icon: Activity },
-    { name: 'Career Questions', path: '/admin/questions', icon: HelpCircle },
-    { name: 'Test Reports', path: '/admin/test-reports', icon: Award },
     { name: 'Users', path: '/admin/users', icon: Users },
     { name: 'Colleges', path: '/admin/colleges', icon: Building2 },
-    { name: 'Locations', path: '/admin/config/locations', icon: MapPin },
-    { name: 'Groups', path: '/admin/config/groups', icon: Users2 },
-    { name: 'Schools', path: '/admin/config/schools', icon: GraduationCap },
-    { name: 'Statuses', path: '/admin/config/statuses', icon: Activity },
-    { name: 'Survey Fields', path: '/admin/config/survey', icon: ClipboardList },
   ];
 
   return (

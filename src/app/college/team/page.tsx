@@ -32,6 +32,8 @@ export default function CollegeTeamPage() {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('TELECALLER');
   const [assignedAgms, setAssignedAgms] = useState<string[]>([]);
+  const [academicYear, setAcademicYear] = useState('');
+  const [admissionTarget, setAdmissionTarget] = useState<number | ''>('');
 
   // Metadata for locations (to display names on badges)
   const [locationsData, setLocationsData] = useState<{
@@ -43,17 +45,33 @@ export default function CollegeTeamPage() {
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
+    // 1. Immediately hydrate from client-side sessionStorage for instant 0ms load!
+    try {
+      const cachedTeam = sessionStorage.getItem('college_team_data');
+      if (cachedTeam) {
+        setData(JSON.parse(cachedTeam));
+        setLoading(false);
+      }
+      const cachedLocs = sessionStorage.getItem('college_locations_data');
+      if (cachedLocs) {
+        setLocationsData(JSON.parse(cachedLocs));
+      }
+    } catch {}
+
     fetchTeam();
     fetchLocations();
   }, []);
 
   const fetchTeam = async () => {
-    setLoading(true);
+    if (!data) setLoading(true);
     try {
       const res = await fetch('/api/college/team');
       if (res.ok) {
         const json = await res.json();
         setData(json);
+        try {
+          sessionStorage.setItem('college_team_data', JSON.stringify(json));
+        } catch {}
       }
     } catch (e) {
       console.error(e);
@@ -68,6 +86,9 @@ export default function CollegeTeamPage() {
       if (res.ok) {
         const json = await res.json();
         setLocationsData(json);
+        try {
+          sessionStorage.setItem('college_locations_data', JSON.stringify(json));
+        } catch {}
       }
     } catch (e) {
       console.error('Error fetching locations:', e);
@@ -120,6 +141,8 @@ export default function CollegeTeamPage() {
           password,
           role,
           assignedAgms: (role === 'TELECALLER' || role === 'EMPLOYEE') ? assignedAgms : [],
+          academicYear: role === 'AGM' ? academicYear : undefined,
+          admissionTarget: role === 'AGM' && admissionTarget !== '' ? Number(admissionTarget) : undefined,
         }),
       });
 
@@ -130,6 +153,8 @@ export default function CollegeTeamPage() {
         setEmployeeId('');
         setPassword('');
         setAssignedAgms([]);
+        setAcademicYear('');
+        setAdmissionTarget('');
         setShowAddModal(false);
         fetchTeam();
         fetchLocations();
@@ -358,7 +383,7 @@ export default function CollegeTeamPage() {
                   <th style={{ padding: '0.75rem 1rem' }}>STAFF NAME</th>
                   <th style={{ padding: '0.75rem 1rem' }}>LOGIN ID (USER ID)</th>
                   <th style={{ padding: '0.75rem 1rem' }}>ROLE</th>
-                  <th style={{ padding: '0.75rem 1rem' }}>ASSIGNED AGM(S)</th>
+                  <th style={{ padding: '0.75rem 1rem' }}>AGM & TARGETS</th>
                   <th style={{ padding: '0.75rem 1rem' }}>ASSIGNED SCHOOLS</th>
                   <th style={{ padding: '0.75rem 1rem' }}>ASSIGNED LEADS</th>
                   <th style={{ padding: '0.75rem 1rem' }}>STATUS</th>
@@ -405,13 +430,50 @@ export default function CollegeTeamPage() {
                       </td>
                       <td style={{ padding: '0.75rem 1rem' }}>
                         {m.role === 'TELECALLER' || m.role === 'EMPLOYEE' ? (
-                          agmNames ? (
-                            <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#92400e', background: '#fef3c7', padding: '0.2rem 0.5rem', borderRadius: '6px' }}>
-                              👔 {agmNames}
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>None Assigned</span>
-                          )
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                            {agmNames ? (
+                              <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#92400e', background: '#fef3c7', padding: '0.2rem 0.5rem', borderRadius: '6px', width: 'fit-content' }}>
+                                👔 {agmNames}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>None Assigned</span>
+                            )}
+                            {(m.dailyDoorstepTarget || m.monthlyDoorstepTarget || m.admissionTarget) && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', fontSize: '0.75rem', fontWeight: 700, marginTop: '0.15rem' }}>
+                                {m.dailyDoorstepTarget && (
+                                  <span style={{ background: '#f0fdf4', color: '#166534', padding: '0.15rem 0.4rem', borderRadius: '4px', border: '1px solid #bbf7d0' }}>
+                                    🚪 {m.dailyDoorstepTarget} / day
+                                  </span>
+                                )}
+                                {m.monthlyDoorstepTarget && (
+                                  <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '0.15rem 0.4rem', borderRadius: '4px', border: '1px solid #bfdbfe' }}>
+                                    📅 {m.monthlyDoorstepTarget} / mo
+                                  </span>
+                                )}
+                                {m.admissionTarget && (
+                                  <span style={{ background: '#fdf4ff', color: '#86198f', padding: '0.15rem 0.4rem', borderRadius: '4px', border: '1px solid #f5d0fe' }}>
+                                    🎯 {m.admissionTarget} Adm
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : m.role === 'AGM' ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            {m.admissionTarget !== null && m.admissionTarget !== undefined && (
+                              <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#047857', background: '#dcfce7', padding: '0.15rem 0.45rem', borderRadius: '4px', width: 'fit-content' }}>
+                                🎯 Target: {m.admissionTarget}
+                              </span>
+                            )}
+                            {m.academicYear && (
+                              <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+                                📅 {m.academicYear}
+                              </span>
+                            )}
+                            {!m.admissionTarget && !m.academicYear && (
+                              <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontStyle: 'italic' }}>Target not set</span>
+                            )}
+                          </div>
                         ) : (
                           <span style={{ color: '#cbd5e1' }}>—</span>
                         )}
@@ -611,6 +673,32 @@ export default function CollegeTeamPage() {
                   onChange={e => setPassword(e.target.value)}
                 />
               </div>
+
+              {role === 'AGM' && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', padding: '0.85rem', background: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label" style={{ fontWeight: 600, fontSize: '0.85rem' }}>Academic Year</label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="e.g. 2026-2027"
+                      value={academicYear}
+                      onChange={e => setAcademicYear(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label" style={{ fontWeight: 600, fontSize: '0.85rem' }}>Admission Target</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="form-control"
+                      placeholder="e.g. 100"
+                      value={admissionTarget}
+                      onChange={e => setAdmissionTarget(e.target.value === '' ? '' : Number(e.target.value))}
+                    />
+                  </div>
+                </div>
+              )}
 
               {role === 'TELECALLER' && (
                 <div className="form-group" style={{ padding: '0.85rem', background: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0' }}>

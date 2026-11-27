@@ -1,17 +1,16 @@
 import React from 'react';
 import Link from 'next/link';
 import { ArrowLeft, ShieldCheck } from 'lucide-react';
-import '../student/student.css'; // Re-use styling if needed, or use inline styles
 
 export default function TermsAndConditionsPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#0f172a', padding: '2rem 1rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ width: '100%', maxWidth: '800px' }}>
         <Link 
-          href="/student/register" 
+          href="/login" 
           style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', color: '#94a3b8', textDecoration: 'none', marginBottom: '2rem', fontSize: '1rem', transition: 'color 0.2s' }}
         >
-          <ArrowLeft size={20} /> Back to Registration
+          <ArrowLeft size={20} /> Back to Login
         </Link>
         
         <div style={{ background: '#1e293b', borderRadius: '24px', padding: '3rem', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)', border: '1px solid rgba(255,255,255,0.05)' }}>

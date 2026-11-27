@@ -32,29 +32,39 @@ export default function AgmDashboardPage() {
   const [staffFilter, setStaffFilter] = useState<'ALL' | 'FIELD' | 'TELECALLER'>('ALL');
   const [searchStaff, setSearchStaff] = useState('');
 
-
-
   const fetchDashboardStats = async () => {
     try {
-      setLoading(true);
+      if (!data) setLoading(true);
       setError('');
       const res = await fetch('/api/agm/dashboard/stats');
       if (res.ok) {
         const json = await res.json();
         setData(json);
+        try {
+          sessionStorage.setItem('agm_dashboard_data', JSON.stringify(json));
+        } catch {}
       } else {
         const errJson = await res.json();
-        setError(errJson.error || 'Failed to load AGM dashboard data.');
+        if (!data) setError(errJson.error || 'Failed to load AGM dashboard data.');
       }
     } catch (err) {
       console.error(err);
-      setError('Connection error loading AGM dashboard.');
+      if (!data) setError('Connection error loading AGM dashboard.');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // Instant 0ms hydration from cache
+    try {
+      const cached = sessionStorage.getItem('agm_dashboard_data');
+      if (cached) {
+        setData(JSON.parse(cached));
+        setLoading(false);
+      }
+    } catch {}
+
     fetchDashboardStats();
   }, []);
 

@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/session';
+import { getCachedGeo } from '@/lib/geoCache';
+import { getCollegeUser } from '@/lib/collegeCache';
 
 export const dynamic = 'force-dynamic';
+
+// In-memory cache for dashboard stats to eliminate repeated DB round-trips
+const statsCache = new Map<string, { timestamp: number; payload: any }>();
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,10 +17,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+    if (!forceRefresh) {
+      const cached = statsCache.get(session.employeeId);
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+        return NextResponse.json(cached.payload);
+      }
+    }
+
+    const currentUser = await getCollegeUser(session.employeeId);
 
     if (!currentUser || !currentUser.collegeId || !currentUser.college) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
@@ -23,46 +34,90 @@ export async function GET(req: NextRequest) {
     const collegeId = currentUser.collegeId;
     const college = currentUser.college;
 
-    // 1. Fetch all schools belonging to this college
-    const schoolsRaw = await prisma.configValue.findMany({
-      where: { type: 'SCHOOL', collegeId },
-      orderBy: { value: 'asc' },
-    });
-
-    // Fetch Mandals & Villages for school location names
-    const [mandalsRaw, villagesRaw] = await Promise.all([
+    // Parallelize all primary data fetching with cached Geo to minimize DB load
+    const [geo, schoolsRaw, teamMembers, students, visits] = await Promise.all([
+      getCachedGeo(collegeId),
+      // 1. Fetch all schools belonging to this college
       prisma.configValue.findMany({
-        where: { type: 'MANDAL' },
-        select: { id: true, value: true, parentId: true },
+        where: { type: 'SCHOOL', collegeId },
+        orderBy: { value: 'asc' },
       }),
-      prisma.configValue.findMany({
-        where: { type: 'VILLAGE' },
-        select: { id: true, value: true, parentId: true },
+      // 2. Fetch all Team Members in this college
+      prisma.user.findMany({
+        where: { collegeId },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          role: true,
+          isActive: true,
+          assignedAgms: true,
+          assignedMandals: true,
+          assignedSchools: true,
+          academicYear: true,
+          admissionTarget: true,
+          dailyDoorstepTarget: true,
+          monthlyDoorstepTarget: true,
+          createdAt: true,
+        },
+        orderBy: { name: 'asc' },
+      }),
+      // 3. Fetch all Students for this college
+      prisma.student.findMany({
+        where: {
+          OR: [
+            { collegeId },
+            { employee: { collegeId } },
+          ],
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          studentName: true,
+          schoolName: true,
+          doorstepCompleted: true,
+          leadStatus: true,
+          admissionDate: true,
+          marks: true,
+          group: true,
+          studyInterestedAt: true,
+          ableToBearFee: true,
+          phone: true,
+          nextFollowUpDate: true,
+          nextFollowUpType: true,
+          telecallerUpdateAt: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      // 4. Fetch all Visits for Doorstep tracking in parallel
+      prisma.visit.findMany({
+        where: {
+          student: {
+            OR: [
+              { collegeId },
+              { employee: { collegeId } },
+            ],
+          },
+        },
+        select: {
+          id: true,
+          studentId: true,
+          addedById: true,
+          visitDate: true,
+          createdAt: true,
+        },
+        orderBy: { visitDate: 'asc' },
       }),
     ]);
+
+    const { mandals: mandalsRaw, villages: villagesRaw } = geo;
 
     const mandalMap = new Map<string, string>();
     mandalsRaw.forEach(m => mandalMap.set(m.id, m.value));
 
     const villageMap = new Map<string, { name: string; mandalId: string | null }>();
     villagesRaw.forEach(v => villageMap.set(v.id, { name: v.value, mandalId: v.parentId }));
-
-    // 2. Fetch all Team Members in this college
-    const teamMembers = await prisma.user.findMany({
-      where: { collegeId },
-      select: {
-        id: true,
-        employeeId: true,
-        name: true,
-        role: true,
-        isActive: true,
-        assignedAgms: true,
-        assignedMandals: true,
-        assignedSchools: true,
-        createdAt: true,
-      },
-      orderBy: { name: 'asc' },
-    });
 
     const fieldStaffList = teamMembers.filter(u => u.role === 'EMPLOYEE');
     const telecallersList = teamMembers.filter(u => u.role === 'TELECALLER');
@@ -74,53 +129,6 @@ export async function GET(req: NextRequest) {
       (staff.assignedSchools || []).forEach(schId => {
         schoolToStaffMap.set(schId, { id: staff.id, name: staff.name });
       });
-    });
-
-    // 3. Fetch all Students for this college
-    // Students can be linked by collegeId, or created by a team member of this college
-    const teamEmployeeIds = teamMembers.map(u => u.employeeId);
-    const students = await prisma.student.findMany({
-      where: {
-        OR: [
-          { collegeId },
-          { employeeId: { in: teamEmployeeIds } },
-        ],
-      },
-      select: {
-        id: true,
-        employeeId: true,
-        studentName: true,
-        schoolName: true,
-        doorstepCompleted: true,
-        leadStatus: true,
-        admissionDate: true,
-        marks: true,
-        group: true,
-        studyInterestedAt: true,
-        ableToBearFee: true,
-        phone: true,
-        nextFollowUpDate: true,
-        nextFollowUpType: true,
-        telecallerUpdateAt: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Fetch Visits for Doorstep tracking
-    const studentIds = students.map(s => s.id);
-    const visits = await prisma.visit.findMany({
-      where: {
-        studentId: { in: studentIds },
-      },
-      select: {
-        id: true,
-        studentId: true,
-        addedById: true,
-        visitDate: true,
-        createdAt: true,
-      },
-      orderBy: { visitDate: 'asc' },
     });
 
     // 4. Calculate School Strength & Data Collection Metrics (User's special request)
@@ -444,7 +452,7 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({
+    const responsePayload = {
       collegeName: college.name,
       subscriptionPlan: college.subscriptionPlan,
 
@@ -491,7 +499,15 @@ export async function GET(req: NextRequest) {
       fieldStaffProgress,
       telecallerProgress,
       agmProgress,
+    };
+
+    // Cache computed stats
+    statsCache.set(session.employeeId, {
+      timestamp: Date.now(),
+      payload: responsePayload,
     });
+
+    return NextResponse.json(responsePayload);
   } catch (error) {
     console.error('Error fetching college dashboard stats:', error);
     return NextResponse.json(

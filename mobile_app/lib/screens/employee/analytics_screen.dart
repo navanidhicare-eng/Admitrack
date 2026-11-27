@@ -184,12 +184,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                 tooltip: 'Summary Report',
                 onPressed: _showMandalSummarySheet,
               ),
-            if (isDrillDown && _schoolReports.isNotEmpty)
-              IconButton(
-                icon: const Icon(Icons.share_outlined, color: Color(0xFF3B82F6)),
-                tooltip: 'Share Mandal Report',
-                onPressed: _showSpecificMandalReportSheet,
-              ),
             IconButton(
               icon: const Icon(Icons.refresh_rounded, color: Color(0xFF4F46E5)),
               tooltip: 'Refresh',
@@ -759,8 +753,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     final query = _schoolSearchQuery.trim().toLowerCase();
     final filteredSchools = _schoolReports.where((s) {
       if (query.isEmpty) return true;
-      final sName = (s['schoolName']?.toString() ?? '').toLowerCase();
-      final vName = (s['village']?.toString() ?? '').toLowerCase();
+      final sName = (s['schoolName']?.toString() ?? s['name']?.toString() ?? '').toLowerCase();
+      final vName = (s['village']?.toString() ?? s['villageName']?.toString() ?? '').toLowerCase();
       final gName = (s['grade']?.toString() ?? '').toLowerCase();
       return sName.contains(query) || vName.contains(query) || gName.contains(query);
     }).toList();
@@ -812,29 +806,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                         style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: const Color(0xFF4338CA)),
                       ),
                     ],
-                  ),
-                ),
-                const SizedBox(width: 6),
-                InkWell(
-                  onTap: _showSpecificMandalReportSheet,
-                  borderRadius: BorderRadius.circular(6),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF3B82F6),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.share_outlined, size: 12, color: Colors.white),
-                        const SizedBox(width: 3),
-                        Text(
-                          'Share',
-                          style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.white),
-                        ),
-                      ],
-                    ),
                   ),
                 ),
               ],
@@ -925,8 +896,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   // -------------------------------------------------------------
   Widget _buildSchoolCard(dynamic schoolRaw) {
     final school = schoolRaw is Map ? schoolRaw : <String, dynamic>{};
-    final sName = school['schoolName']?.toString() ?? 'School';
-    final sVillage = school['village']?.toString() ?? '';
+    final rawName = school['schoolName'] ?? school['name'] ?? school['value'];
+    final sName = (rawName != null && rawName.toString().trim().isNotEmpty)
+        ? rawName.toString().trim()
+        : 'School';
+    final rawVillage = school['village'] ?? school['villageName'] ?? school['village_name'];
+    final sVillage = (rawVillage != null && rawVillage.toString().trim().isNotEmpty)
+        ? rawVillage.toString().trim()
+        : '';
     final sGrade = school['grade']?.toString() ?? '';
     final sTarget = (school['target'] as num?)?.toInt() ?? 0;
     final sCollected = (school['collected'] as num?)?.toInt() ?? 0;
@@ -1461,8 +1438,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     buffer.writeln('Collected: ${stats['totalCollected']}');
                     buffer.writeln('Remaining: ${stats['totalRemaining']}\n');
                     for (final s in _schoolReports) {
-                      final name = s['schoolName'] ?? 'School';
-                      final village = s['village'] ?? '';
+                      final rawN = s['schoolName'] ?? s['name'] ?? s['value'];
+                      final name = (rawN != null && rawN.toString().trim().isNotEmpty) ? rawN.toString().trim() : 'School';
+                      final rawV = s['village'] ?? s['villageName'] ?? s['village_name'];
+                      final village = (rawV != null && rawV.toString().trim().isNotEmpty) ? rawV.toString().trim() : '';
                       final col = s['collected'] ?? 0;
                       final tar = s['target'] ?? 0;
                       final pct = s['percentage'] ?? 0;
@@ -1484,8 +1463,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   separatorBuilder: (_, i) => const SizedBox(height: 6),
                   itemBuilder: (_, index) {
                     final s = _schoolReports[index];
-                    final name = s['schoolName']?.toString() ?? 'School';
-                    final village = s['village']?.toString() ?? '';
+                    final rawN = s['schoolName'] ?? s['name'] ?? s['value'];
+                    final name = (rawN != null && rawN.toString().trim().isNotEmpty) ? rawN.toString().trim() : 'School';
+                    final rawV = s['village'] ?? s['villageName'] ?? s['village_name'];
+                    final village = (rawV != null && rawV.toString().trim().isNotEmpty) ? rawV.toString().trim() : '';
                     final grade = s['grade']?.toString() ?? '';
                     final col = s['collected'] ?? 0;
                     final tar = s['target'] ?? 0;

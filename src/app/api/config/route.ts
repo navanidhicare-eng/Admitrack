@@ -1,18 +1,51 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { cookies } from 'next/headers';
-import { verifyToken } from '@/lib/auth';
+import { verifyToken, getAuthToken } from '@/lib/auth';
 import { getAllConfigsCached, invalidateConfigCache } from '@/lib/cache';
+import { invalidateGeoCache } from '@/lib/geoCache';
 
 export const dynamic = 'force-dynamic';
 
-// GET all config values, grouped by type (using in-memory cache with instant invalidation)
-export async function GET() {
+// GET config values (Tenant-aware & Employee school-isolated: Field staff only get their assigned schools)
+export async function GET(req: Request) {
   try {
-    const configs = await getAllConfigsCached();
+    const token = await getAuthToken(req, 'auth_token');
+    let collegeId: string | null = null;
+    let userAssignedSchools: string[] | null = null;
+
+    if (token) {
+      const payload = verifyToken(token) as { role: string; employeeId: string; collegeId?: string } | null;
+      if (payload && payload.role !== 'ADMIN') {
+        if (payload.role === 'EMPLOYEE' && payload.employeeId) {
+          const user = await prisma.user.findUnique({
+            where: { employeeId: payload.employeeId },
+            select: { collegeId: true, assignedSchools: true },
+          });
+          collegeId = user?.collegeId || payload.collegeId || null;
+          userAssignedSchools = user?.assignedSchools || [];
+        } else if (payload.collegeId) {
+          collegeId = payload.collegeId;
+        } else if (payload.employeeId) {
+          const user = await prisma.user.findUnique({
+            where: { employeeId: payload.employeeId },
+            select: { collegeId: true },
+          });
+          collegeId = user?.collegeId || null;
+        }
+      }
+    }
+
+    const configs = await getAllConfigsCached(collegeId);
+
+    // Filter schools strictly by employee assignment
+    let finalConfigs = configs;
+    if (userAssignedSchools !== null) {
+      finalConfigs = configs.filter(c => c.type !== 'SCHOOL' || userAssignedSchools!.includes(c.id));
+    }
     
     return NextResponse.json(
-      { configs }, 
+      { configs: finalConfigs }, 
       { 
         status: 200,
         headers: {
@@ -26,17 +59,34 @@ export async function GET() {
   }
 }
 
-// POST new config value (Admin only)
+// POST new config value (Admin or College Admin)
 export async function POST(req: Request) {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get('auth_token')?.value;
 
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const payload = verifyToken(token) as { role: string } | null;
+    const payload = verifyToken(token) as { role: string; employeeId: string; collegeId?: string } | null;
     
-    if (!payload || payload.role !== 'ADMIN') {
+    if (!payload || (payload.role !== 'ADMIN' && payload.role !== 'COLLEGE')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    let targetCollegeId: string | null = null;
+    if (payload.role === 'COLLEGE') {
+      if (payload.collegeId) {
+        targetCollegeId = payload.collegeId;
+      } else {
+        const user = await prisma.user.findUnique({
+          where: { employeeId: payload.employeeId },
+          select: { collegeId: true },
+        });
+        targetCollegeId = user?.collegeId || null;
+      }
+
+      if (!targetCollegeId) {
+        return NextResponse.json({ error: 'College not found for current user' }, { status: 404 });
+      }
     }
 
     const data = await req.json();
@@ -55,7 +105,7 @@ export async function POST(req: Request) {
     const config = await prisma.configValue.create({
       data: {
         type,
-        value,
+        value: String(value).trim(),
         parentId: parentId || null,
         strength: parsedStrength,
         grade: grade || null,
@@ -63,11 +113,13 @@ export async function POST(req: Request) {
         headmasterPhone: headmasterPhone || null,
         keyPersonName: keyPersonName || null,
         keyPersonPhone: keyPersonPhone || null,
+        collegeId: targetCollegeId,
       }
     });
 
-    // Invalidate static cache so subsequent requests get fresh data
-    invalidateConfigCache();
+    // Invalidate static and geo caches for this college
+    invalidateConfigCache(targetCollegeId);
+    invalidateGeoCache(targetCollegeId);
 
     return NextResponse.json({ message: 'Config added', config }, { status: 201 });
   } catch (error) {

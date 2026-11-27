@@ -36,9 +36,6 @@ import {
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Capacitor } from '@capacitor/core';
-import { Filesystem, Directory } from '@capacitor/filesystem';
-import { Share } from '@capacitor/share';
 
 type ReportTab = 'COLLEGE_MASTER' | 'STAFF_REPORTS' | 'STUDENT_REPORTS' | 'SCHOOL_REPORTS';
 

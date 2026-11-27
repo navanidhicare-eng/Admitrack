@@ -1,39 +1,54 @@
 import { prisma } from '@/lib/prisma';
 
-let cachedConfigs: any[] | null = null;
-let lastConfigFetchTime = 0;
+interface CachedConfigData {
+  timestamp: number;
+  configs: any[];
+}
+
+const configCacheMap = new Map<string, CachedConfigData>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
 
 /**
- * Returns all ConfigValue records from memory cache if fresh,
- * or queries Prisma and updates cache.
+ * Returns ConfigValue records from memory cache if fresh,
+ * filtered by collegeId (including null system configs).
  */
-export async function getAllConfigsCached() {
+export async function getAllConfigsCached(collegeId?: string | null) {
+  const cacheKey = collegeId || '__global__';
   const now = Date.now();
-  if (cachedConfigs && (now - lastConfigFetchTime < CACHE_TTL_MS)) {
-    return cachedConfigs;
+  const cached = configCacheMap.get(cacheKey);
+
+  if (cached && (now - cached.timestamp < CACHE_TTL_MS)) {
+    return cached.configs;
   }
 
   try {
-    cachedConfigs = await prisma.configValue.findMany({
-      orderBy: { value: 'asc' }
+    const where: any = {};
+    if (collegeId) {
+      where.OR = [
+        { collegeId: null },
+        { collegeId: collegeId },
+      ];
+    }
+
+    const configs = await prisma.configValue.findMany({
+      where,
+      orderBy: { value: 'asc' },
     });
-    lastConfigFetchTime = now;
-    return cachedConfigs;
+
+    configCacheMap.set(cacheKey, { timestamp: now, configs });
+    return configs;
   } catch (error) {
     console.error('Error fetching configs from database:', error);
-    // If cache exists even if expired, return it as fallback during DB hiccup
-    if (cachedConfigs) return cachedConfigs;
+    if (cached) return cached.configs;
     throw error;
   }
 }
 
 /**
  * Returns a dictionary mapping config ID -> value string.
- * Completely instantaneous lookup.
  */
-export async function getConfigMapCached(): Promise<Record<string, string>> {
-  const configs = await getAllConfigsCached();
+export async function getConfigMapCached(collegeId?: string | null): Promise<Record<string, string>> {
+  const configs = await getAllConfigsCached(collegeId);
   const map: Record<string, string> = {};
   for (let i = 0; i < configs.length; i++) {
     map[configs[i].id] = configs[i].value;
@@ -44,16 +59,19 @@ export async function getConfigMapCached(): Promise<Record<string, string>> {
 /**
  * Returns configs filtered by type from cache.
  */
-export async function getConfigsByTypeCached(type: string) {
-  const configs = await getAllConfigsCached();
+export async function getConfigsByTypeCached(type: string, collegeId?: string | null) {
+  const configs = await getAllConfigsCached(collegeId);
   return configs.filter(c => c.type === type);
 }
 
 /**
- * Invalidates the in-memory config cache.
- * Call this when an admin creates, updates, or deletes a ConfigValue.
+ * Invalidates the in-memory config cache for a college or globally.
  */
-export function invalidateConfigCache() {
-  cachedConfigs = null;
-  lastConfigFetchTime = 0;
+export function invalidateConfigCache(collegeId?: string | null) {
+  if (collegeId) {
+    configCacheMap.delete(collegeId);
+    configCacheMap.delete('__global__');
+  } else {
+    configCacheMap.clear();
+  }
 }

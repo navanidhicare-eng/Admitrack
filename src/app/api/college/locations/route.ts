@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/session';
+import { getCollegeUser } from '@/lib/collegeCache';
+import { getCachedGeo } from '@/lib/geoCache';
 
 export const dynamic = 'force-dynamic';
+
+const locationsCache = new Map<string, { timestamp: number; data: any }>();
+const LOCATIONS_CACHE_TTL_MS = 30 * 1000; // 30 seconds
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,34 +16,47 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId || !currentUser.college) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
     }
 
     const collegeId = currentUser.collegeId;
 
-    // 1. Fetch Mandals, Villages, and Schools from ConfigValue
-    const [mandalsRaw, villagesRaw, schoolsRaw] = await Promise.all([
-      prisma.configValue.findMany({
-        where: { type: 'MANDAL' },
-        select: { id: true, value: true, parentId: true },
-        orderBy: { value: 'asc' },
-      }),
-      prisma.configValue.findMany({
-        where: { type: 'VILLAGE' },
-        select: { id: true, value: true, parentId: true },
-      }),
+    // Check cache
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+    if (!forceRefresh) {
+      const cached = locationsCache.get(collegeId);
+      if (cached && Date.now() - cached.timestamp < LOCATIONS_CACHE_TTL_MS) {
+        return NextResponse.json(cached.data);
+      }
+    }
+
+    // 1. Fetch cached Geo and college-specific data concurrently
+    const [geo, schoolsRaw, fieldEmployees] = await Promise.all([
+      getCachedGeo(collegeId),
       prisma.configValue.findMany({
         where: { type: 'SCHOOL', collegeId: collegeId },
         select: { id: true, value: true, parentId: true, strength: true, grade: true },
         orderBy: { value: 'asc' },
       }),
+      prisma.user.findMany({
+        where: {
+          collegeId: collegeId,
+          role: 'EMPLOYEE',
+        },
+        select: {
+          id: true,
+          name: true,
+          employeeId: true,
+          isActive: true,
+          assignedMandals: true,
+          assignedSchools: true,
+        },
+      }),
     ]);
+
+    const { mandals: mandalsRaw, villages: villagesRaw } = geo;
 
     const mandalMap = new Map<string, { id: string; name: string }>();
     mandalsRaw.forEach(m => mandalMap.set(m.id, { id: m.id, name: m.value }));
@@ -85,22 +103,6 @@ export async function GET(req: NextRequest) {
       name: m.value,
     }));
 
-    // 3. Fetch all Field Employees in this College to build the School Assignment Map
-    const fieldEmployees = await prisma.user.findMany({
-      where: {
-        collegeId: collegeId,
-        role: 'EMPLOYEE',
-      },
-      select: {
-        id: true,
-        name: true,
-        employeeId: true,
-        isActive: true,
-        assignedMandals: true,
-        assignedSchools: true,
-      },
-    });
-
     // schoolAssignments: { [schoolId]: { employeeId, employeeName, isActive } }
     const schoolAssignments: Record<string, { employeeId: string; employeeName: string; isActive: boolean }> = {};
 
@@ -114,11 +116,15 @@ export async function GET(req: NextRequest) {
       });
     });
 
-    return NextResponse.json({
+    const responsePayload = {
       mandals,
       schools,
       schoolAssignments,
-    });
+    };
+
+    locationsCache.set(collegeId, { timestamp: Date.now(), data: responsePayload });
+
+    return NextResponse.json(responsePayload);
   } catch (error) {
     console.error('Error fetching college locations and assignments:', error);
     return NextResponse.json({ error: 'Failed to load locations' }, { status: 500 });

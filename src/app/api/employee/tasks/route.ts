@@ -4,6 +4,9 @@ import { verifyToken, getAuthToken } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
+const tasksCache = new Map<string, { timestamp: number; payload: any }>();
+const CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
 export async function GET(req: Request) {
   try {
     const token = await getAuthToken(req, 'auth_token');
@@ -21,6 +24,12 @@ export async function GET(req: Request) {
     const categoryFilter = searchParams.get('category') || 'ALL';
     const search = searchParams.get('search')?.trim();
     const employeeIdParam = searchParams.get('employeeId');
+
+    const cacheKey = `${payload.role}_${payload.employeeId}_${employeeIdParam || ''}_${statusFilter}_${priorityFilter}_${categoryFilter}_${search || ''}`;
+    const cached = tasksCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return NextResponse.json(cached.payload, { status: 200 });
+    }
 
     const where: any = {};
 
@@ -61,19 +70,6 @@ export async function GET(req: Request) {
       ];
     }
 
-    const tasks = await prisma.employeeTask.findMany({
-      where,
-      orderBy: [
-        { status: 'asc' }, // Pending / In progress first
-        { endDate: 'asc' },  // Closest deadlines first
-      ],
-      include: {
-        employee: {
-          select: { name: true, employeeId: true }
-        }
-      }
-    });
-
     // Compute stats for the current employee (or current filter scope)
     const baseScope: any = {};
     if (payload.role === 'EMPLOYEE') {
@@ -82,21 +78,43 @@ export async function GET(req: Request) {
       baseScope.employeeId = employeeIdParam;
     }
 
-    const [totalCount, pendingCount, inProgressCount, completedCount, overdueCount] = await Promise.all([
-      prisma.employeeTask.count({ where: baseScope }),
-      prisma.employeeTask.count({ where: { ...baseScope, status: 'PENDING' } }),
-      prisma.employeeTask.count({ where: { ...baseScope, status: 'IN_PROGRESS' } }),
-      prisma.employeeTask.count({ where: { ...baseScope, status: 'COMPLETED' } }),
-      prisma.employeeTask.count({
-        where: {
-          ...baseScope,
-          status: { not: 'COMPLETED' },
-          endDate: { lt: now }
+    // Parallel fetch: filtered tasks + all base tasks for stats in ONE single round trip
+    const [tasks, allBaseTasks] = await Promise.all([
+      prisma.employeeTask.findMany({
+        where,
+        orderBy: [
+          { status: 'asc' }, // Pending / In progress first
+          { endDate: 'asc' },  // Closest deadlines first
+        ],
+        include: {
+          employee: {
+            select: { name: true, employeeId: true }
+          }
         }
+      }),
+      prisma.employeeTask.findMany({
+        where: baseScope,
+        select: { id: true, status: true, endDate: true },
       })
     ]);
 
-    return NextResponse.json({
+    let totalCount = allBaseTasks.length;
+    let pendingCount = 0;
+    let inProgressCount = 0;
+    let completedCount = 0;
+    let overdueCount = 0;
+
+    for (const t of allBaseTasks) {
+      if (t.status === 'PENDING') pendingCount++;
+      else if (t.status === 'IN_PROGRESS') inProgressCount++;
+      else if (t.status === 'COMPLETED') completedCount++;
+
+      if (t.status !== 'COMPLETED' && t.endDate && new Date(t.endDate) < now) {
+        overdueCount++;
+      }
+    }
+
+    const responsePayload = {
       tasks,
       stats: {
         total: totalCount,
@@ -105,7 +123,11 @@ export async function GET(req: Request) {
         completed: completedCount,
         overdue: overdueCount,
       }
-    }, { status: 200 });
+    };
+
+    tasksCache.set(cacheKey, { timestamp: Date.now(), payload: responsePayload });
+
+    return NextResponse.json(responsePayload, { status: 200 });
 
   } catch (error) {
     console.error('Error fetching employee tasks:', error);

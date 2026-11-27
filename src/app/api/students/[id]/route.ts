@@ -138,7 +138,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           visits: {
             orderBy: { visitDate: 'desc' }
           },
-          assessmentReport: true,
           collegeBranch: {
             select: { id: true, name: true, code: true, location: true }
           },
@@ -178,7 +177,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         visits: {
           orderBy: { visitDate: 'desc' }
         },
-        assessmentReport: true,
         collegeBranch: {
           select: { id: true, name: true, code: true, location: true }
         },

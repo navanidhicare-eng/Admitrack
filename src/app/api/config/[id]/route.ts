@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { cookies } from 'next/headers';
 import { verifyToken } from '@/lib/auth';
 import { invalidateConfigCache } from '@/lib/cache';
+import { invalidateGeoCache } from '@/lib/geoCache';
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,10 +12,27 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
     const token = cookieStore.get('auth_token')?.value;
 
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const payload = verifyToken(token) as { role: string } | null;
+    const payload = verifyToken(token) as { role: string; employeeId: string; collegeId?: string } | null;
     
-    if (!payload || payload.role !== 'ADMIN') {
+    if (!payload || (payload.role !== 'ADMIN' && payload.role !== 'COLLEGE')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const item = await prisma.configValue.findUnique({ where: { id } });
+    if (!item) return NextResponse.json({ error: 'Config item not found' }, { status: 404 });
+
+    if (payload.role === 'COLLEGE') {
+      let collegeId = payload.collegeId;
+      if (!collegeId) {
+        const user = await prisma.user.findUnique({
+          where: { employeeId: payload.employeeId },
+          select: { collegeId: true },
+        });
+        collegeId = user?.collegeId || undefined;
+      }
+      if (!collegeId || item.collegeId !== collegeId) {
+        return NextResponse.json({ error: 'You do not have permission to delete this item' }, { status: 403 });
+      }
     }
 
     // Delete children first (if it's a district/mandal)
@@ -26,11 +44,12 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
       where: { id }
     });
 
-    invalidateConfigCache();
+    invalidateConfigCache(item.collegeId);
+    invalidateGeoCache(item.collegeId);
 
     return NextResponse.json({ message: 'Config deleted' }, { status: 200 });
   } catch (error) {
-    console.error(error);
+    console.error('Error deleting config:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -42,10 +61,27 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const token = cookieStore.get('auth_token')?.value;
 
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const payload = verifyToken(token) as { role: string } | null;
+    const payload = verifyToken(token) as { role: string; employeeId: string; collegeId?: string } | null;
     
-    if (!payload || (payload.role !== 'ADMIN' && payload.role !== 'TELECALLER')) {
+    if (!payload || (payload.role !== 'ADMIN' && payload.role !== 'TELECALLER' && payload.role !== 'COLLEGE')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const item = await prisma.configValue.findUnique({ where: { id } });
+    if (!item) return NextResponse.json({ error: 'Config item not found' }, { status: 404 });
+
+    if (payload.role === 'COLLEGE') {
+      let collegeId = payload.collegeId;
+      if (!collegeId) {
+        const user = await prisma.user.findUnique({
+          where: { employeeId: payload.employeeId },
+          select: { collegeId: true },
+        });
+        collegeId = user?.collegeId || undefined;
+      }
+      if (!collegeId || item.collegeId !== collegeId) {
+        return NextResponse.json({ error: 'You do not have permission to edit this item' }, { status: 403 });
+      }
     }
 
     const data = await req.json();
@@ -66,7 +102,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
 
     const updateData: any = {
-      value,
+      value: String(value).trim(),
       ...(parsedStrength !== undefined && { strength: parsedStrength }),
       ...(grade !== undefined && { grade: grade || null }),
       ...(headmasterName !== undefined && { headmasterName: headmasterName || null }),
@@ -92,7 +128,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       data: updateData
     });
 
-    invalidateConfigCache();
+    invalidateConfigCache(item.collegeId);
+    invalidateGeoCache(item.collegeId);
 
     return NextResponse.json({ message: 'Config updated', config: updated }, { status: 200 });
   } catch (error) {

@@ -1,15 +1,19 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { verifyToken, getAuthToken } from '@/lib/auth';
+import { getCachedGeo } from '@/lib/geoCache';
 
 export const dynamic = 'force-dynamic';
+
+const schoolsProgressCache = new Map<string, { timestamp: number; payload: any }>();
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
 
 export async function GET(req: Request) {
   try {
     const token = await getAuthToken(req, 'auth_token');
 
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const payload = verifyToken(token) as { role: string } | null;
+    const payload = verifyToken(token) as { role: string; employeeId?: string; collegeId?: string } | null;
     
     if (!payload) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -24,128 +28,159 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'Mandal ID or District ID is required' }, { status: 400 });
     }
 
-    let mandals: any[] = [];
-    let villages: any[] = [];
+    const cacheKey = `${payload.collegeId || 'global'}_${mandalId || ''}_${districtId || ''}_${grade || ''}_${payload.employeeId || ''}`;
+    const cached = schoolsProgressCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return NextResponse.json(cached.payload, { status: 200 });
+    }
+
+    // 1. Fetch geo hierarchy from memory cache (0ms) and user permissions in parallel
+    const [geo, currentUser, reportingStaff] = await Promise.all([
+      getCachedGeo(payload.collegeId || null),
+      payload.role === 'EMPLOYEE' && payload.employeeId
+        ? prisma.user.findUnique({
+            where: { employeeId: payload.employeeId },
+            select: { assignedSchools: true, collegeId: true },
+          })
+        : null,
+      payload.role === 'AGM' && payload.employeeId
+        ? prisma.user.findMany({
+            where: { assignedAgms: { has: payload.employeeId } },
+            select: { assignedSchools: true },
+          })
+        : null,
+    ]);
+
     let reportTitleLocation = '';
+    let targetMandalIds: string[] = [];
 
     if (mandalId) {
-      // 1. Get the Mandal name
-      const mandal = await prisma.configValue.findUnique({
-        where: { id: mandalId }
-      });
-
+      const mandal = geo.mandals.find(m => m.id === mandalId);
       if (!mandal) {
         return NextResponse.json({ error: 'Mandal not found' }, { status: 404 });
       }
-
-      mandals = [mandal];
+      targetMandalIds = [mandal.id];
       reportTitleLocation = `${mandal.value} Mandal`;
-
-      // 2. Get all Villages under this Mandal
-      villages = await prisma.configValue.findMany({
-        where: { type: 'VILLAGE', parentId: mandalId }
-      });
     } else if (districtId) {
-      // 1. Get District
-      const district = await prisma.configValue.findUnique({
-        where: { id: districtId }
-      });
-
+      const district = geo.districts.find(d => d.id === districtId);
       if (!district) {
         return NextResponse.json({ error: 'District not found' }, { status: 404 });
       }
-
       reportTitleLocation = `${district.value} District`;
-
-      // 2. Get all Mandals under District
-      mandals = await prisma.configValue.findMany({
-        where: { type: 'MANDAL', parentId: districtId }
-      });
-      const mandalIds = mandals.map(m => m.id);
-
-      // 3. Get all Villages under these Mandals
-      villages = await prisma.configValue.findMany({
-        where: { type: 'VILLAGE', parentId: { in: mandalIds } }
-      });
+      targetMandalIds = geo.mandals.filter(m => m.parentId === districtId).map(m => m.id);
     }
 
+    // Fast O(1) village lookup from RAM
+    const targetMandalSet = new Set(targetMandalIds);
+    const villages = geo.villages.filter(v => v.parentId && targetMandalSet.has(v.parentId));
     const villageIds = villages.map(v => v.id);
+    const villageMap = new Map<string, string>();
+    villages.forEach(v => villageMap.set(v.id, v.value));
+    const validParentIds = [...villageIds, ...targetMandalIds];
 
-    // 3. Get all Schools under these Villages
+    // Determine school ownership / assignment based on user role
+    let userAssignedSchools: string[] | null = null;
+    if (payload.role === 'EMPLOYEE') {
+      userAssignedSchools = currentUser?.assignedSchools || [];
+    } else if (payload.role === 'AGM') {
+      const agmSchools = Array.from(new Set((reportingStaff || []).flatMap(s => s.assignedSchools || [])));
+      if (agmSchools.length > 0) {
+        userAssignedSchools = agmSchools;
+      }
+    }
+
+    const effectiveCollegeId = payload.collegeId || currentUser?.collegeId;
+
+    // Fetch schools under these villages/mandals
     const schoolsWhere: any = {
       type: 'SCHOOL',
-      parentId: { in: villageIds }
+      parentId: { in: validParentIds },
     };
-    
     if (grade) {
       schoolsWhere.grade = grade;
     }
-
-    const schools = await prisma.configValue.findMany({
-      where: schoolsWhere
-    });
-
-    // 4. For each school, count the students
-    const schoolNames = schools.map(s => s.value);
-    
-    const studentWhereClause: any = {
-      schoolName: { in: schoolNames }
-    };
-    
-    // Only count students added by this user if they are normal EMPLOYEE (Admin and Telecaller see all)
-    if (payload.role !== 'ADMIN' && payload.role !== 'TELECALLER') {
-      studentWhereClause.employeeId = (payload as any).employeeId;
+    if (effectiveCollegeId) {
+      schoolsWhere.OR = [{ collegeId: null }, { collegeId: effectiveCollegeId }];
+    }
+    // Strict assignment isolation: Field employee MUST only see schools assigned to them!
+    if (userAssignedSchools !== null) {
+      schoolsWhere.id = { in: userAssignedSchools.length > 0 ? userAssignedSchools : ['__none__'] };
     }
 
-    const studentCounts = await prisma.student.groupBy({
-      by: ['schoolName'],
-      where: studentWhereClause,
-      _count: {
-        id: true
+    // Student count query conditions
+    const studentWhereClause: any = {};
+    if (payload.role !== 'ADMIN' && payload.role !== 'TELECALLER' && payload.employeeId) {
+      studentWhereClause.employeeId = payload.employeeId;
+    }
+    if (effectiveCollegeId) {
+      studentWhereClause.OR = [
+        { collegeId: effectiveCollegeId },
+        { employee: { collegeId: effectiveCollegeId } },
+      ];
+    }
+
+    // Run school fetch and student grouping in parallel
+    const [schools, studentCounts] = await Promise.all([
+      prisma.configValue.findMany({
+        where: schoolsWhere,
+        select: { id: true, value: true, parentId: true, strength: true, grade: true },
+      }),
+      prisma.student.groupBy({
+        by: ['schoolName'],
+        where: Object.keys(studentWhereClause).length > 0 ? studentWhereClause : undefined,
+        _count: {
+          id: true,
+        },
+      }),
+    ]);
+
+    const countsMap: Record<string, number> = {};
+    studentCounts.forEach(curr => {
+      if (curr.schoolName) {
+        countsMap[curr.schoolName.trim().toLowerCase()] = curr._count.id;
       }
     });
 
-    // Map counts to school names
-    const countsMap = studentCounts.reduce((acc, curr) => {
-      if (curr.schoolName) {
-        acc[curr.schoolName] = curr._count.id;
-      }
-      return acc;
-    }, {} as Record<string, number>);
-
-    // 5. Construct the final report data
     const reportData = schools.map(school => {
-      const collected = countsMap[school.value] || 0;
+      const schoolKey = school.value ? school.value.trim().toLowerCase() : '';
+      const collected = countsMap[schoolKey] || 0;
       const target = school.strength || 0;
-      const v = villages.find(v => v.id === school.parentId);
-      const m = v ? mandals.find(m => m.id === v.parentId) : mandals[0];
+      const villageName = school.parentId ? villageMap.get(school.parentId) || 'Unknown' : 'Unknown';
+
+      let percentage = 0;
+      if (target > 0) {
+        percentage = Math.min(100, Math.round((collected / target) * 100));
+      } else if (collected > 0) {
+        percentage = 100;
+      }
+
+      const displayName = school.value && school.value.trim() ? school.value.trim() : 'Unknown School';
 
       return {
-        mandal: m?.value || 'Unknown',
-        village: v?.value || 'Unknown',
-        schoolName: school.value,
+        id: school.id,
+        name: displayName,
+        schoolName: displayName,
         grade: school.grade || 'N/A',
         target,
         collected,
         remaining: Math.max(0, target - collected),
-        percentage: target > 0 ? Math.min(100, Math.round((collected / target) * 100)) : 0,
-        headmasterName: school.headmasterName || 'N/A',
-        headmasterPhone: school.headmasterPhone || 'N/A',
-        keyPersonName: school.keyPersonName || '-',
-        keyPersonPhone: school.keyPersonPhone || '-'
+        percentage,
+        villageName,
+        village: villageName,
       };
     });
 
-    // Sort by village then school name
-    reportData.sort((a, b) => {
-      if (a.mandal !== b.mandal) return a.mandal.localeCompare(b.mandal);
-      if (a.village !== b.village) return a.village.localeCompare(b.village);
-      return a.schoolName.localeCompare(b.schoolName);
-    });
+    reportData.sort((a, b) => b.collected - a.collected);
 
-    return NextResponse.json({ report: reportData, titleLocation: reportTitleLocation }, { status: 200 });
+    const responsePayload = {
+      reportTitleLocation,
+      report: reportData,
+    };
+    schoolsProgressCache.set(cacheKey, { timestamp: Date.now(), payload: responsePayload });
+
+    return NextResponse.json(responsePayload, { status: 200 });
   } catch (error) {
-    console.error('Error generating report:', error);
+    console.error('Error generating schools progress report:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

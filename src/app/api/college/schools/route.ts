@@ -1,8 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/session';
+import { getCollegeUser } from '@/lib/collegeCache';
+import { getCachedGeo } from '@/lib/geoCache';
 
 export const dynamic = 'force-dynamic';
+
+const schoolsCache = new Map<string, { timestamp: number; payload: any }>();
+const CACHE_TTL_MS = 45 * 1000; // 45 seconds
+
+export function invalidateSchoolsCache(collegeId?: string | null) {
+  if (collegeId) {
+    schoolsCache.delete(collegeId);
+  } else {
+    schoolsCache.clear();
+  }
+}
 
 // GET all schools belonging to this college
 export async function GET(req: NextRequest) {
@@ -12,59 +25,52 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const currentUser = await prisma.user.findUnique({
-      where: { employeeId: session.employeeId },
-      include: { college: true },
-    });
-
+    const currentUser = await getCollegeUser(session.employeeId);
     if (!currentUser || !currentUser.collegeId) {
       return NextResponse.json({ error: 'College not found' }, { status: 404 });
     }
 
     const collegeId = currentUser.collegeId;
 
-    // 1. Fetch all Mandals and Villages (for selection dropdowns)
-    const [mandalsRaw, villagesRaw] = await Promise.all([
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === 'true';
+    if (!forceRefresh) {
+      const cached = schoolsCache.get(collegeId);
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+        return NextResponse.json(cached.payload);
+      }
+    }
+
+    // Parallel fetch: Geo hierarchy from cache, college schools, and field staff in 1 round trip
+    const [geo, collegeSchoolsRaw, fieldStaff] = await Promise.all([
+      getCachedGeo(collegeId),
       prisma.configValue.findMany({
-        where: { type: 'MANDAL' },
-        select: { id: true, value: true, parentId: true },
-        orderBy: { value: 'asc' },
+        where: {
+          type: 'SCHOOL',
+          collegeId: collegeId,
+        },
+        orderBy: { createdAt: 'desc' },
       }),
-      prisma.configValue.findMany({
-        where: { type: 'VILLAGE' },
-        select: { id: true, value: true, parentId: true },
-        orderBy: { value: 'asc' },
+      prisma.user.findMany({
+        where: {
+          collegeId: collegeId,
+          role: 'EMPLOYEE',
+        },
+        select: {
+          id: true,
+          name: true,
+          employeeId: true,
+          assignedSchools: true,
+        },
       }),
     ]);
+
+    const { mandals: mandalsRaw, villages: villagesRaw } = geo;
 
     const mandalMap = new Map<string, { id: string; name: string }>();
     mandalsRaw.forEach(m => mandalMap.set(m.id, { id: m.id, name: m.value }));
 
     const villageMap = new Map<string, { id: string; name: string; mandalId: string | null }>();
     villagesRaw.forEach(v => villageMap.set(v.id, { id: v.id, name: v.value, mandalId: v.parentId }));
-
-    // 2. Fetch schools belonging STRICTLY to this college
-    const collegeSchoolsRaw = await prisma.configValue.findMany({
-      where: {
-        type: 'SCHOOL',
-        collegeId: collegeId,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // 3. Fetch Field Staff in this college to map who is assigned to which school
-    const fieldStaff = await prisma.user.findMany({
-      where: {
-        collegeId: collegeId,
-        role: 'EMPLOYEE',
-      },
-      select: {
-        id: true,
-        name: true,
-        employeeId: true,
-        assignedSchools: true,
-      },
-    });
 
     const assignmentMap: Record<string, { employeeId: string; employeeName: string }> = {};
     fieldStaff.forEach(staff => {
@@ -76,7 +82,7 @@ export async function GET(req: NextRequest) {
       });
     });
 
-    // 4. Enrich schools with Mandal & Village names, plus Assigned Staff
+    // Enrich schools with Mandal & Village names, plus Assigned Staff
     const schools = collegeSchoolsRaw.map(s => {
       let mandalId: string | null = null;
       let villageName = '';
@@ -115,14 +121,18 @@ export async function GET(req: NextRequest) {
     const mandals = mandalsRaw.map(m => ({ id: m.id, name: m.value }));
     const villages = villagesRaw.map(v => ({ id: v.id, name: v.value, mandalId: v.parentId }));
 
-    return NextResponse.json({
+    const payload = {
       schools,
       mandals,
       villages,
       totalCount: schools.length,
       assignedCount: schools.filter(s => s.assignedStaff).length,
       unassignedCount: schools.filter(s => !s.assignedStaff).length,
-    });
+    };
+
+    schoolsCache.set(collegeId, { timestamp: Date.now(), payload });
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error('Error fetching college schools:', error);
     return NextResponse.json({ error: 'Failed to fetch schools' }, { status: 500 });
@@ -190,6 +200,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    invalidateSchoolsCache(currentUser.collegeId);
     return NextResponse.json(newSchool, { status: 201 });
   } catch (error) {
     console.error('Error creating college school:', error);
@@ -266,6 +277,7 @@ export async function PUT(req: NextRequest) {
       data: updateData,
     });
 
+    invalidateSchoolsCache(currentUser.collegeId);
     return NextResponse.json(updated);
   } catch (error) {
     console.error('Error updating college school:', error);
@@ -331,6 +343,7 @@ export async function DELETE(req: NextRequest) {
       });
     }
 
+    invalidateSchoolsCache(currentUser.collegeId);
     return NextResponse.json({ success: true, message: 'School deleted successfully' });
   } catch (error) {
     console.error('Error deleting college school:', error);

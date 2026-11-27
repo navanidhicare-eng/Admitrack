@@ -653,17 +653,17 @@ class _EmployeeDashboardScreenState extends State<EmployeeDashboardScreen> {
                       ),
                       const SizedBox(width: 12),
 
-                      // 9. Gen PDF (White with document icon)
+                      // 9. School & Tuition Visits (White with domain icon)
                       Expanded(
                         child: _buildSquircleAction(
-                          label: 'Gen\nPDF',
+                          label: 'School & Tuition\nVisits',
                           isWhite: true,
-                          icon: Icons.picture_as_pdf_rounded,
-                          iconColor: const Color(0xFF38BDF8),
+                          icon: Icons.domain_rounded,
+                          iconColor: const Color(0xFF2563EB),
                           onTap: () {
                             Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => const PdfReportScreen()),
+                              MaterialPageRoute(builder: (_) => const InstitutionVisitsScreen()),
                             );
                           },
                         ),
@@ -900,15 +900,18 @@ class _EmployeeDashboardScreenState extends State<EmployeeDashboardScreen> {
           const SizedBox(height: 6),
 
           // Label
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFF334155),
-              height: 1.15,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF334155),
+                height: 1.15,
+              ),
             ),
           ),
         ],
@@ -1184,15 +1187,6 @@ class _EmployeeDashboardScreenState extends State<EmployeeDashboardScreen> {
                               ),
                             );
                             _loadCachedStats();
-                          },
-                        ),
-                        _buildMobileMenuItem(
-                          icon: Icons.domain_rounded,
-                          iconColor: const Color(0xFF2563EB),
-                          title: 'School & Tuition Visits',
-                          onTap: () {
-                            Navigator.pop(context);
-                            Navigator.push(context, MaterialPageRoute(builder: (_) => const InstitutionVisitsScreen()));
                           },
                         ),
                         const Divider(height: 1, color: Color(0xFFF1F5F9)),

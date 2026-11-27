@@ -8,14 +8,16 @@ import 'remarks_preset_service.dart';
 import 'whatsapp_template_service.dart';
 
 class ApiService {
-  // Live server URL (matches capacitor.config.ts)
-  // On Flutter Web, routes through local proxy at http://127.0.0.1:5000 to bypass browser Cookie sandbox
-  // On Android/iOS native mobile devices, connects directly to https://sri.uniknaturals.in
+  // Local server URL
+  // On Flutter Web, routes through local proxy at http://127.0.0.1:5000
+  // On Android native mobile devices / emulators, connects to local machine
   static String get baseUrl {
     if (kIsWeb) {
       return 'http://127.0.0.1:5000';
     }
-    return 'https://sri.uniknaturals.in';
+    return defaultTargetPlatform == TargetPlatform.android
+        ? 'http://10.0.2.2:3000'
+        : 'http://127.0.0.1:3000';
   }
 
   static String _formatConnectionError(dynamic e) {
@@ -1159,7 +1161,7 @@ class ApiService {
     try {
       final headers = await getAuthHeaders();
       final uri = await buildUri('/api/employee/tasks', {'status': status});
-      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 10));
+      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 30));
 
       final data = jsonDecode(response.body);
       if (response.statusCode == 200) {
@@ -1594,7 +1596,7 @@ class ApiService {
     try {
       final headers = await getAuthHeaders();
       final uri = await buildUri('/api/reports/mandals-summary');
-      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 10));
+      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         return {'success': true, 'summaries': data['summaries'] ?? []};
@@ -1610,7 +1612,7 @@ class ApiService {
     try {
       final headers = await getAuthHeaders();
       final uri = await buildUri('/api/reports/schools-progress', {'mandalId': mandalId});
-      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 10));
+      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 30));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         return {'success': true, 'report': data['report'] ?? [], 'mandalName': data['reportTitleLocation'] ?? ''};

@@ -1417,13 +1417,7 @@ class _VillageVisitsScreenState extends State<VillageVisitsScreen> {
                                         studentId: studentId,
                                         visitId: isEditing ? existingVisit['id']?.toString() : null,
                                         remarks: remarksController.text.trim(),
-                                        visitDate: DateTime(
-                                          _selectedDate.year,
-                                          _selectedDate.month,
-                                          _selectedDate.day,
-                                          DateTime.now().hour,
-                                          DateTime.now().minute,
-                                        ).toIso8601String(),
+                                        visitDate: DateTime.now().toIso8601String(),
                                         nextFollowUpType: apiFollowUpType,
                                         nextFollowUpDate: (apiFollowUpType == 'Date' && nextFollowUpDate != null)
                                             ? _formatDate(nextFollowUpDate!)
@@ -2076,38 +2070,25 @@ class _VillageVisitsScreenState extends State<VillageVisitsScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    // 1. Date Selector
-                                    Text('DATE', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: const Color(0xFF475569), letterSpacing: 0.5)),
+                                    // 1. Date (Locked to Today - Read Only)
+                                    Text('DATE (TODAY)', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: const Color(0xFF475569), letterSpacing: 0.5)),
                                     const SizedBox(height: 6),
-                                    GestureDetector(
-                                      onTap: () async {
-                                        final picked = await showDatePicker(
-                                          context: context,
-                                          initialDate: _selectedDate,
-                                          firstDate: DateTime(2024),
-                                          lastDate: DateTime(2028),
-                                        );
-                                        if (picked != null) {
-                                          setState(() {
-                                            _selectedDate = picked;
-                                            _recomputeFilteredStudents();
-                                          });
-                                        }
-                                      },
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFF8FAFC),
-                                          borderRadius: BorderRadius.circular(10),
-                                          border: Border.all(color: const Color(0xFFCBD5E1)),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            const Icon(Icons.calendar_month_rounded, size: 16, color: Color(0xFF64748B)),
-                                            const SizedBox(width: 8),
-                                            Text(_formatDate(_selectedDate), style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: const Color(0xFF0F172A))),
-                                          ],
-                                        ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFF1F5F9),
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          const Icon(Icons.calendar_month_rounded, size: 16, color: Color(0xFF64748B)),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(_formatDate(DateTime.now()), style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: const Color(0xFF0F172A))),
+                                          ),
+                                          const Icon(Icons.lock_rounded, size: 16, color: Color(0xFF94A3B8)),
+                                        ],
                                       ),
                                     ),
                                     const SizedBox(height: 12),

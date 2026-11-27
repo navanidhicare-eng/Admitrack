@@ -471,8 +471,7 @@ export async function GET(req: Request) {
     }
 
     const minimal = searchParams.get('minimal') === 'true';
-
-    const total = await prisma.student.count({ where: whereClause });
+    const needVisits = searchParams.get('includeVisits') === 'true' || searchParams.has('reportType') || searchParams.has('followup');
 
     const isReportExport = limit > 100 || searchParams.has('reportType');
     let visitInclude: any = {
@@ -484,8 +483,6 @@ export async function GET(req: Request) {
       visitInclude.where = { ...(visitInclude.where || {}), addedById: payload.employeeId };
     }
 
-
-
     const queryOptions: any = {
       where: whereClause,
       orderBy: { createdAt: 'desc' },
@@ -493,7 +490,9 @@ export async function GET(req: Request) {
       take: limit,
     };
 
-    if (minimal) {
+    if (limit === 1) {
+      queryOptions.select = { id: true };
+    } else if (minimal) {
       queryOptions.select = {
         id: true,
         employeeId: true,
@@ -530,7 +529,7 @@ export async function GET(req: Request) {
         applicationPhoto: true,
         createdAt: true,
         updatedAt: true,
-        visits: visitInclude,
+        ...(needVisits ? { visits: visitInclude } : {}),
       };
     } else {
       queryOptions.include = { 
@@ -540,7 +539,11 @@ export async function GET(req: Request) {
       };
     }
 
-    const students = await prisma.student.findMany(queryOptions);
+    // Run count and query in parallel to cut DB round-trip latency in half
+    const [total, students] = await Promise.all([
+      prisma.student.count({ where: whereClause }),
+      prisma.student.findMany(queryOptions),
+    ]);
 
     return NextResponse.json({ students, total, page, limit }, { status: 200 });
   } catch (error) {
