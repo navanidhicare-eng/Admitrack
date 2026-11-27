@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,10 +7,14 @@ import 'remarks_preset_service.dart';
 import 'whatsapp_template_service.dart';
 
 class ApiService {
-  // Local server URL
-  // On Flutter Web, routes through local proxy at http://127.0.0.1:5000
-  // On Android native mobile devices / emulators, connects to local machine
+  // Production API URL injected at build time:
+  // flutter build apk --dart-define=API_URL=https://your-domain.com
+  static const String _envApiUrl = String.fromEnvironment('API_URL', defaultValue: '');
+
   static String get baseUrl {
+    if (_envApiUrl.isNotEmpty) {
+      return _envApiUrl;
+    }
     if (kIsWeb) {
       return 'http://127.0.0.1:5000';
     }
@@ -27,12 +30,9 @@ class ApiService {
     return 'Unable to reach server. Working in Offline Mode.';
   }
 
-  // JWT Secret fallback matching server's fallback JWT secret
-  static const String _jwtSecret = 'super-secret-fallback-key-for-local-dev';
+  // ================= SESSION & AUTH =================
 
-  // ================= PERMANENT SESSION & AUTH =================
-
-  /// Save session info - Permanent login (never expires until user explicitly logs out)
+  /// Save session info from server response
   static Future<void> saveUserSession({
     required String role,
     required String name,
@@ -51,41 +51,28 @@ class ApiService {
     await WhatsAppTemplateService.setActiveEmployee(idOrPhone);
     await RemarksPresetService.setActiveEmployee(idOrPhone);
 
-    // If token is null, generate 10-year permanent token
-    final validToken = (token != null && token.isNotEmpty)
-        ? token
-        : generateFallbackToken(employeeId: idOrPhone, name: name, role: role);
-
-    await prefs.setString('auth_token', validToken);
+    if (token != null && token.isNotEmpty) {
+      await prefs.setString('auth_token', token);
+    }
 
     if (cookies != null && cookies.isNotEmpty) {
       await prefs.setString('session_cookie', cookies);
     }
   }
 
-  /// Get saved session - auto-renews token if expired so user is NEVER logged out unexpectedly
+  /// Get saved session
   static Future<Map<String, String?>> getSession() async {
     final prefs = await SharedPreferences.getInstance();
     final role = prefs.getString('user_role');
     final name = prefs.getString('user_name');
     final identifier = prefs.getString('user_identifier');
-    String? token = prefs.getString('auth_token');
+    final token = prefs.getString('auth_token');
     final cookie = prefs.getString('session_cookie');
 
     // Ensure services know active employee ID
     if (identifier != null && identifier.isNotEmpty) {
       OfflineService.setActiveUser(identifier);
       await WhatsAppTemplateService.setActiveEmployee(identifier);
-
-      // Auto-heal / refresh token to guarantee user stays logged in forever
-      if (token == null || token.isEmpty || _isTokenExpired(token)) {
-        token = generateFallbackToken(
-          employeeId: identifier,
-          name: name ?? 'User',
-          role: role ?? 'EMPLOYEE',
-        );
-        await prefs.setString('auth_token', token);
-      }
     }
 
     return {
@@ -166,7 +153,8 @@ class ApiService {
     _configsInFlight = Future<List<dynamic>>(() async {
       try {
         final uri = await buildUri('/api/config');
-        final res = await http.get(uri).timeout(const Duration(seconds: 8));
+        final headers = await getAuthHeaders();
+        final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
           if (data['configs'] is List) {
@@ -199,7 +187,8 @@ class ApiService {
     Future.microtask(() async {
       try {
         final uri = await buildUri('/api/config');
-        final res = await http.get(uri).timeout(const Duration(seconds: 8));
+        final headers = await getAuthHeaders();
+        final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body);
           if (data['configs'] is List) {
@@ -316,61 +305,20 @@ class ApiService {
     }
   }
 
-  /// Generate fallback JWT valid for 10 years (3650 days) - Permanent login
-  static String generateFallbackToken({
-    required String employeeId,
-    required String name,
-    required String role,
-  }) {
-    final headerMap = {'alg': 'HS256', 'typ': 'JWT'};
-    final payloadMap = {
-      'employeeId': employeeId,
-      'name': name,
-      'role': role,
-      'exp': (DateTime.now().add(const Duration(days: 3650)).millisecondsSinceEpoch / 1000).round(),
-    };
-
-    final header = base64Url.encode(utf8.encode(jsonEncode(headerMap))).replaceAll('=', '');
-    final payload = base64Url.encode(utf8.encode(jsonEncode(payloadMap))).replaceAll('=', '');
-
-    final hmac = Hmac(sha256, utf8.encode(_jwtSecret));
-    final digest = hmac.convert(utf8.encode('$header.$payload'));
-    final signature = base64Url.encode(digest.bytes).replaceAll('=', '');
-
-    return '$header.$payload.$signature';
-  }
-
-  /// Returns valid auth token, auto-renewing with 10-year validity if missing or expired
+  /// Returns stored server auth token if present and not expired
   static Future<String?> getValidToken() async {
     final session = await getSession();
-    String? token = session['token'];
-    final idOrPhone = session['identifier'];
-    final name = session['name'] ?? 'User';
-    final role = session['role'] ?? 'EMPLOYEE';
-
-    if (idOrPhone != null && idOrPhone.isNotEmpty) {
-      if (token == null || token.isEmpty || _isTokenExpired(token)) {
-        token = generateFallbackToken(
-          employeeId: idOrPhone,
-          name: name,
-          role: role,
-        );
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('auth_token', token);
-      }
+    final token = session['token'];
+    if (token == null || token.isEmpty || _isTokenExpired(token)) {
+      return null;
     }
     return token;
   }
 
   static Future<Uri> buildUri(String path, [Map<String, String>? queryParams]) async {
-    final token = await getValidToken();
-    final params = Map<String, String>.from(queryParams ?? {});
-    if (token != null && !params.containsKey('token') && !params.containsKey('auth_token')) {
-      params['token'] = token;
-    }
     final uri = Uri.parse('$baseUrl$path');
-    if (params.isEmpty) return uri;
-    return uri.replace(queryParameters: {...uri.queryParameters, ...params});
+    if (queryParams == null || queryParams.isEmpty) return uri;
+    return uri.replace(queryParameters: {...uri.queryParameters, ...queryParams});
   }
 
   static Future<Map<String, String>> getAuthHeaders() async {

@@ -8,17 +8,24 @@ const FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || '';
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || '';
-const CRON_SECRET = process.env.CRON_SECRET || 'MY_SUPER_SECRET_CRON_KEY_123';
+const CRON_SECRET = process.env.CRON_SECRET?.trim();
 
 // Need a separate prisma instance for the route since it might run concurrently
 const prisma = new PrismaClient();
 
 export async function GET(req: Request) {
-  // Security check: only allow execution if the correct secret is provided
-  const { searchParams } = new URL(req.url);
-  const secret = searchParams.get('secret');
+  if (!CRON_SECRET) {
+    console.error('CRON_SECRET is not configured.');
+    return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
+  }
 
-  if (secret !== CRON_SECRET) {
+  // Security check: require Bearer token in Authorization header (no query string secrets)
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
+  const bearerToken = authHeader?.toLowerCase().startsWith('bearer ')
+    ? authHeader.substring(7).trim()
+    : null;
+
+  if (bearerToken !== CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

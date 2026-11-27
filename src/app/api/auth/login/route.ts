@@ -3,9 +3,22 @@ import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
 import { signToken } from '@/lib/auth';
 import { cookies } from 'next/headers';
+import { checkAuthRateLimit, getClientIp } from '@/core/security/rate-limiter';
 
 export async function POST(req: Request) {
   try {
+    const ip = getClientIp(req);
+    const ipLimit = checkAuthRateLimit(`login:ip:${ip}`, 10, 60_000);
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many login attempts. Please try again later.' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(ipLimit.retryAfterSeconds) },
+        }
+      );
+    }
+
     const { employeeId, password } = await req.json();
 
     if (!employeeId || !password) {
@@ -14,6 +27,21 @@ export async function POST(req: Request) {
 
     const cleanId = employeeId.trim();
     const cleanPassword = password.trim();
+
+    const idLimit = checkAuthRateLimit(
+      `login:id:${cleanId.toLowerCase()}`,
+      5,
+      60_000
+    );
+    if (!idLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many login attempts for this account. Please wait a minute.' },
+        {
+          status: 429,
+          headers: { 'Retry-After': String(idLimit.retryAfterSeconds) },
+        }
+      );
+    }
 
     const user = await prisma.user.findFirst({
       where: {
@@ -28,18 +56,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid credentials.' }, { status: 401 });
     }
 
-    let isMatch = await bcrypt.compare(cleanPassword, user.password);
-
-    // Fallback for admin if password was typed as 'admin', 'admin123', or 'Psd@1986'
-    if (!isMatch && user.role === 'ADMIN' && (cleanPassword === 'Psd@1986' || cleanPassword === 'admin' || cleanPassword === 'admin123')) {
-      isMatch = true;
-      // Auto-update to new hash so future logins are instant
-      const newHash = await bcrypt.hash(cleanPassword, 10);
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { password: newHash },
-      }).catch(console.error);
-    }
+    const isMatch = await bcrypt.compare(cleanPassword, user.password);
 
     if (!isMatch) {
       return NextResponse.json({ error: 'Invalid credentials.' }, { status: 401 });

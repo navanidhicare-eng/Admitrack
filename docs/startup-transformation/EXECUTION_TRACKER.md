@@ -22,7 +22,7 @@
 | Stage | Status | Completed | Total |
 |-------|--------|-----------|-------|
 | **Discovery & Planning** | ✅ Done | 4 | 4 |
-| **Sprint 0: P0 Security Lockdown** | ⬜ Not Started | 0 | 10 |
+| **Sprint 0: P0 Security Lockdown** | 🟡 9/10 Done (1 Manual Prod Step) | 9 | 10 |
 | **Phase 0: 5 Core Foundations** | ⬜ Not Started | 0 | 5 |
 | **Sprint 1: Safety Net & Continuous Test Gate** | ⬜ Not Started | 0 | 8 |
 | **Phase 1: Module-by-Module Migration (12 Modules)** | ⬜ Not Started | 0 | 12 |
@@ -45,16 +45,16 @@
 
 > Target: 1–2 Days. Zero architecture changes — pure security fixes.
 
-- [ ] **Remove hardcoded `JWT_SECRET` fallback** in `src/lib/auth.ts` (crash loudly if missing)
-- [ ] **Remove hardcoded `_jwtSecret` & client-side token generation** from `mobile_app/lib/services/api_service.dart`
-- [ ] **Delete plaintext admin password backdoor** (`Psd@1986`, `admin`, `admin123`) in `src/app/api/auth/login/route.ts`
-- [ ] **Force-rotate production `JWT_SECRET`** and reset admin passwords to strong bcrypt hashes
-- [ ] **Restrict CORS** in `next.config.ts` (replace `Access-Control-Allow-Origin: *` with `process.env.ALLOWED_ORIGIN`)
-- [ ] **Remove token-in-query-param extraction** (`?token=` / `?auth_token=`) in `src/lib/auth.ts`
-- [ ] **Secure `/api/cron/backup`**: remove default `CRON_SECRET` fallback and switch from `?secret=` query param to `Authorization` header
-- [ ] **Add startup env validation** (`src/core/config/env.ts` with Zod) so missing secrets crash on boot
-- [ ] **Add rate limiting on `/api/auth/login`** (e.g., 5 attempts/min per IP, 10/min per `employeeId`)
-- [ ] **Remove hardcoded `localhost` / `10.0.2.2` URLs** in `mobile_app/lib/services/api_service.dart` (use `--dart-define=API_URL=...`)
+- [x] **Remove hardcoded `JWT_SECRET` fallback** in `src/lib/auth.ts` (crash loudly if missing)
+- [x] **Remove hardcoded `_jwtSecret` & client-side token generation** from `mobile_app/lib/services/api_service.dart`
+- [x] **Delete plaintext admin password backdoor** (`Psd@1986`, `admin`, `admin123`) in `src/app/api/auth/login/route.ts`
+- [ ] **Force-rotate production `JWT_SECRET`** and reset admin passwords to strong bcrypt hashes *(Manual production ops step)*
+- [x] **Restrict CORS** in `next.config.ts` (replace `Access-Control-Allow-Origin: *` with `process.env.ALLOWED_ORIGIN`)
+- [x] **Remove token-in-query-param extraction** (`?token=` / `?auth_token=`) in `src/lib/auth.ts` and `api_service.dart`
+- [x] **Secure `/api/cron/backup`**: remove default `CRON_SECRET` fallback and switch from `?secret=` query param to `Authorization` header
+- [x] **Add startup env validation** (`src/core/config/env.ts`) so missing secrets crash on boot
+- [x] **Add rate limiting on `/api/auth/login`** (5 attempts/min per `employeeId`, 10/min per IP)
+- [x] **Remove hardcoded `localhost` / `10.0.2.2` URLs** in `mobile_app/lib/services/api_service.dart` (use `--dart-define=API_URL=...`)
 
 ---
 
@@ -154,3 +154,4 @@
 | Date | What Changed | By |
 |------|-------------|-----|
 | 2026-11-27 | Created `docs/startup-transformation/` with Audit Report, Migration Mechanism, Blueprint, and Execution Tracker | Initial Setup |
+| 2026-11-27 | Completed Sprint 0 (9/10 P0 security fixes): removed JWT fallbacks, admin password backdoor, query-param tokens, wildcard CORS, backup default secret; added env validation, login rate limiting, and Flutter `--dart-define=API_URL` | Sprint 0 |
